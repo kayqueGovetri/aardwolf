@@ -106,6 +106,9 @@ class RDPConnection:
 
 		self.x224_connection_reply = None
 		self.x224_protocol = None
+		
+		# RDS support - minimal addition
+		self.__rds_mode = False
 
 		self.__server_connect_pdu:TS_SC = None # serverconnectpdu message from server (holds security exchange data)
 		
@@ -880,9 +883,15 @@ class RDPConnection:
 			if shc.pduType == PDUTYPE.DATAPDU:
 				shd = TS_SHAREDATAHEADER.from_bytes(data)
 				if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
-					# we got an error!
+					# Check for RDS mode detection first
 					res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
-					raise Exception('Server replied with error! Code: %s ErrName: %s' % (hex(res.errorInfoRaw), res.errorInfo.name))
+					if res.errorInfoRaw == 0:  # ERRINFO_NONE indicates RDS mode
+						logger.info('🔍 RDS server detected via SET_ERROR_INFO_PDU with ERRINFO_NONE')
+						self.__rds_mode = True
+						# Continue processing for RDS
+					else:
+						# we got an actual error!
+						raise Exception('Server replied with error! Code: %s ErrName: %s' % (hex(res.errorInfoRaw), res.errorInfo.name))
 
 				elif shd.pduType2 == PDUTYPE2.SYNCHRONIZE:
 					# this is the expected data here
@@ -960,9 +969,101 @@ class RDPConnection:
 
 			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 			
+			# RDS-specific video activation sequence (minimal addition)
+			if self.__rds_mode:
+				await self.__rds_video_activation()
+			
 			return True, None
 		except Exception as e:
 			return None, e
+	
+	async def __rds_video_activation(self):
+		"""RDS-specific video activation sequence - separate method to avoid modifying core logic"""
+		try:
+			logger.debug('📺 === RDS VIDEO ACTIVATION SEQUENCE ===')
+			
+			# STEP 0: CLIENT_INFO_PDU for RDS session creation
+			logger.debug('📋 === STEP 0: CLIENT_INFO_PDU CONSTRUCTION (RDS) ===')
+			from aardwolf.protocol.T125.infopacket import TS_INFO_PACKET, INFO_FLAG
+			from aardwolf.protocol.T125.extendedinfopacket import TS_EXTENDED_INFO_PACKET, TS_TIME_ZONE_INFORMATION, CLI_AF
+			
+			info = TS_INFO_PACKET()
+			info.CodePage = 0
+			info.flags = INFO_FLAG.MOUSE | INFO_FLAG.DISABLECTRLALTDEL | INFO_FLAG.UNICODE | INFO_FLAG.MAXIMIZESHELL | INFO_FLAG.LOGONNOTIFY
+			info.cbDomain = len(self.credentials.domain) * 2 if self.credentials.domain else 0
+			info.cbUserName = len(self.credentials.username) * 2 if self.credentials.username else 0
+			info.cbPassword = len(self.credentials.password) * 2 if self.credentials.password else 0
+			info.cbAlternateShell = 0
+			info.cbWorkingDir = 0
+			info.Domain = self.credentials.domain if self.credentials.domain else ''
+			info.UserName = self.credentials.username if self.credentials.username else ''
+			info.Password = self.credentials.password if self.credentials.password else ''
+			info.AlternateShell = ''
+			info.WorkingDir = ''
+			
+			info.extraInfo = TS_EXTENDED_INFO_PACKET()
+			info.extraInfo.clientAddressFamily = CLI_AF.INET
+			info.extraInfo.cbClientAddress = 0
+			info.extraInfo.clientAddress = ''
+			info.extraInfo.cbClientDir = 0
+			info.extraInfo.clientDir = ''
+			info.extraInfo.clientTimeZone = TS_TIME_ZONE_INFORMATION()
+			info.extraInfo.clientSessionId = 0
+			info.extraInfo.performanceFlags = 0
+			info.extraInfo.cbAutoReconnectLen = 0
+			
+			# Send CLIENT_INFO_PDU with no encryption for RDS
+			await self.handle_out_data(info, None, None, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ CLIENT_INFO_PDU sent successfully for RDS!')
+			await asyncio.sleep(0.1)
+			
+			# STEP 5: REFRESH_RECT_PDU
+			from aardwolf.protocol.T128.refreshrectpdu import TS_REFRESH_RECT_PDU
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.compressedType = 0
+			data_hdr.pduType2 = PDUTYPE2.REFRESH_RECT
+			
+			refresh_rect = TS_REFRESH_RECT_PDU()
+			refresh_rect.numberOfAreas = 1
+			refresh_rect.areasToRefresh = [{'left': 0, 'top': 0, 'right': self.iosettings.video_width, 'bottom': self.iosettings.video_height}]
+			
+			await self.handle_out_data(refresh_rect, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ REFRESH_RECT_PDU sent for RDS')
+			
+			# STEP 6: SUPPRESS_OUTPUT_PDU
+			from aardwolf.protocol.T128.suppressoutputpdu import TS_SUPPRESS_OUTPUT_PDU
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.compressedType = 0
+			data_hdr.pduType2 = PDUTYPE2.SUPPRESS_OUTPUT
+			
+			suppress_output = TS_SUPPRESS_OUTPUT_PDU()
+			suppress_output.allowDisplayUpdates = 1
+			
+			await self.handle_out_data(suppress_output, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ SUPPRESS_OUTPUT_PDU sent for RDS')
+			
+			# STEP 7: PERSISTENT_KEY_LIST_PDU
+			from aardwolf.protocol.T128.persistentkeylistpdu import TS_PERSISTENT_KEY_LIST_PDU
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.compressedType = 0
+			data_hdr.pduType2 = PDUTYPE2.PERSISTENT_KEY_LIST
+			
+			persistent_keys = TS_PERSISTENT_KEY_LIST_PDU()
+			
+			await self.handle_out_data(persistent_keys, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ PERSISTENT_KEY_LIST_PDU sent for RDS')
+			
+			logger.debug('🎯 RDS video activation sequence completed!')
+			
+		except Exception as e:
+			logger.error(f'RDS video activation failed: {e}')
+			raise e
 		
 	async def send_disconnect(self):
 		"""Sends a disconnect request to the server. This will NOT close the connection!"""
