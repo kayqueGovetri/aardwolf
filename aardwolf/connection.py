@@ -924,6 +924,10 @@ class RDPConnection:
 				# Check if this is RDS mode and handle accordingly
 				if self.__rds_mode:
 					logger.debug('🔍 RDS server - no DATAPDU received after CONFIRMACTIVEPDU, proceeding with RDS capability exchange')
+					# For RDS mode, skip standard synchronization and go directly to RDS sequence
+					logger.debug('📺 Starting RDS capability exchange sequence')
+					await self.__rds_video_activation()
+					return True, None
 				else:
 					raise Exception('Unexpected reply! %s' % shc.pduType.name)
 
@@ -1016,14 +1020,20 @@ class RDPConnection:
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
 			info.flags = INFO_FLAG.MOUSE | INFO_FLAG.DISABLECTRLALTDEL | INFO_FLAG.UNICODE | INFO_FLAG.MAXIMIZESHELL | INFO_FLAG.LOGONNOTIFY
-			info.cbDomain = len(self.credentials.domain) * 2 if self.credentials.domain else 0
-			info.cbUserName = len(self.credentials.username) * 2 if self.credentials.username else 0
-			info.cbPassword = len(self.credentials.password) * 2 if self.credentials.password else 0
+			info.Domain = ''
+			info.UserName = ''
+			info.Password = ''
+			if self.credentials.domain is not None:
+				info.Domain = self.credentials.domain
+			if self.credentials.username is not None:
+				info.UserName = self.credentials.username
+			if self.credentials.secret is not None:
+				info.Password = self.credentials.secret
+			info.cbDomain = len(info.Domain) * 2
+			info.cbUserName = len(info.UserName) * 2
+			info.cbPassword = len(info.Password) * 2
 			info.cbAlternateShell = 0
 			info.cbWorkingDir = 0
-			info.Domain = self.credentials.domain if self.credentials.domain else ''
-			info.UserName = self.credentials.username if self.credentials.username else ''
-			info.Password = self.credentials.password if self.credentials.password else ''
 			info.AlternateShell = ''
 			info.WorkingDir = ''
 			
