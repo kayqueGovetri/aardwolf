@@ -900,7 +900,18 @@ class RDPConnection:
 				else:
 					raise Exception('Unexpected reply! %s' % shd.pduType2.name)
 			else:
-				raise Exception('Unexpected reply! %s' % shc.pduType.name)
+				# RDS servers may not send DATAPDU after CONFIRMACTIVEPDU
+				# Check if this is RDS mode and handle accordingly
+				if self.__rds_mode:
+					logger.debug('🔍 RDS server - no DATAPDU received after CONFIRMACTIVEPDU, proceeding with RDS capability exchange')
+				else:
+					raise Exception('Unexpected reply! %s' % shc.pduType.name)
+
+			# For RDS mode, skip standard synchronization and go directly to RDS sequence
+			if self.__rds_mode:
+				logger.debug('📺 Starting RDS capability exchange sequence')
+				await self.__rds_video_activation()
+				return True, None
 
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
@@ -970,8 +981,7 @@ class RDPConnection:
 			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 			
 			# RDS-specific video activation sequence (minimal addition)
-			if self.__rds_mode:
-				await self.__rds_video_activation()
+			# Note: This is now handled earlier in the method for RDS mode
 			
 			return True, None
 		except Exception as e:
