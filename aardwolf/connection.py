@@ -776,6 +776,26 @@ class RDPConnection:
 			data = data[data_start_offset:]
 			shc = TS_SHARECONTROLHEADER.from_bytes(data)
 			if shc.pduType != PDUTYPE.DEMANDACTIVEPDU:
+				# Check for RDS mode detection before throwing error
+				if shc.pduType == PDUTYPE.DATAPDU:
+					try:
+						shd = TS_SHAREDATAHEADER.from_bytes(data)
+						if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
+							res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
+							if res.errorInfoRaw == 0:  # ERRINFO_NONE indicates RDS mode
+								logger.info('🔍 RDS server detected via SET_ERROR_INFO_PDU with ERRINFO_NONE')
+								self.__rds_mode = True
+								logger.debug('📺 Starting RDS capability exchange sequence')
+								await self.__rds_video_activation()
+								return True, None
+							else:
+								# we got an actual error!
+								raise Exception('Server replied with error! Code: %s ErrName: %s' % (hex(res.errorInfoRaw), res.errorInfo.name))
+					except Exception as e:
+						if 'Server replied with error!' in str(e):
+							raise e
+				
+				# If not RDS, show detailed error message
 				error_msg = f'Unexpected reply! Expected DEMANDACTIVEPDU got "{shc.pduType.name}" instead!'
 				error_msg += f'\n  PDU Type: {shc.pduType} (0x{shc.pduType.value:02x})'
 				error_msg += f'\n  PDU Source: {shc.pduSource}'
@@ -907,11 +927,7 @@ class RDPConnection:
 				else:
 					raise Exception('Unexpected reply! %s' % shc.pduType.name)
 
-			# For RDS mode, skip standard synchronization and go directly to RDS sequence
-			if self.__rds_mode:
-				logger.debug('📺 Starting RDS capability exchange sequence')
-				await self.__rds_video_activation()
-				return True, None
+			# RDS mode is now handled earlier in the method before DEMANDACTIVEPDU validation
 
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
@@ -1027,6 +1043,68 @@ class RDPConnection:
 			logger.debug('✅ CLIENT_INFO_PDU sent successfully for RDS!')
 			await asyncio.sleep(0.1)
 			
+			# STEP 1: SYNCHRONIZE PDU
+			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.compressedType = 0
+			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
+			
+			sync_pdu = TS_SYNCHRONIZE_PDU()
+			sync_pdu.targetUser = self.__joined_channels['MCS'].channel_id
+			
+			await self.handle_out_data(sync_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ STEP 1: SYNCHRONIZE PDU sent for RDS')
+			
+			# STEP 2: COOPERATE Control
+			from aardwolf.protocol.T128.controlpdu import TS_CONTROL_PDU, CTRLACTION
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.compressedType = 0
+			data_hdr.pduType2 = PDUTYPE2.CONTROL
+			
+			cooperate_pdu = TS_CONTROL_PDU()
+			cooperate_pdu.action = CTRLACTION.COOPERATE
+			cooperate_pdu.grantId = 0
+			cooperate_pdu.controlId = 0
+			
+			await self.handle_out_data(cooperate_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ STEP 2: COOPERATE Control sent for RDS')
+			
+			# STEP 3: REQUEST_CONTROL
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.compressedType = 0
+			data_hdr.pduType2 = PDUTYPE2.CONTROL
+			
+			request_control_pdu = TS_CONTROL_PDU()
+			request_control_pdu.action = CTRLACTION.REQUEST_CONTROL
+			request_control_pdu.grantId = 0
+			request_control_pdu.controlId = 0
+			
+			await self.handle_out_data(request_control_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ STEP 3: REQUEST_CONTROL sent for RDS')
+			
+			# STEP 4: FONTLIST PDU
+			from aardwolf.protocol.T128.fontlistpdu import TS_FONT_LIST_PDU
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.compressedType = 0
+			data_hdr.pduType2 = PDUTYPE2.FONTLIST
+			
+			fontlist_pdu = TS_FONT_LIST_PDU()
+			fontlist_pdu.numberFonts = 0
+			fontlist_pdu.totalNumFonts = 0
+			fontlist_pdu.listFlags = 0x0003  # FONTLIST_FIRST | FONTLIST_LAST
+			fontlist_pdu.entrySize = 0x0032
+			
+			await self.handle_out_data(fontlist_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ STEP 4: FONTLIST PDU sent for RDS')
+			
 			# STEP 5: REFRESH_RECT_PDU
 			from aardwolf.protocol.T128.refreshrectpdu import TS_REFRESH_RECT_PDU
 			data_hdr = TS_SHAREDATAHEADER()
@@ -1040,7 +1118,7 @@ class RDPConnection:
 			refresh_rect.areasToRefresh = [{'left': 0, 'top': 0, 'right': self.iosettings.video_width, 'bottom': self.iosettings.video_height}]
 			
 			await self.handle_out_data(refresh_rect, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ REFRESH_RECT_PDU sent for RDS')
+			logger.debug('✅ STEP 5: REFRESH_RECT_PDU sent for RDS')
 			
 			# STEP 6: SUPPRESS_OUTPUT_PDU
 			from aardwolf.protocol.T128.suppressoutputpdu import TS_SUPPRESS_OUTPUT_PDU
