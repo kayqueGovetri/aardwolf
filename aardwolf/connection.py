@@ -737,17 +737,41 @@ class RDPConnection:
 			await self.handle_out_data(info, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
 
 			p = TS_SYNCHRONIZE_PDU()
-			await self.handle_out_data(p, None, None, None, self.__joined_channels['MCS'].channel_id, False)
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+			await self.handle_out_data(p, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
 
 			p = TS_CONTROL_PDU()
+			p.action = CTRLACTION.COOPERATE
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+			await self.handle_out_data(p, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+		
+			p = TS_CONTROL_PDU()
 			p.action = CTRLACTION.REQUEST_CONTROL
-
-			await self.handle_out_data(p, None, None, None, self.__joined_channels['MCS'].channel_id, False)
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+			await self.handle_out_data(p, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
 
 			p = TS_FONT_LIST_PDU()
 			p.numFonts = 0
+			p.listFlags = 0x0001  # FONTLIST_FIRST | FONTLIST_LAST
 			p.fonts = []
-			await self.handle_out_data(p, None, None, None, self.__joined_channels['MCS'].channel_id, False)
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+			await self.handle_out_data(p, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
 
 			return True, None
 		except Exception as e:
@@ -956,7 +980,7 @@ class RDPConnection:
 			cli_sync = TS_SYNCHRONIZE_PDU()
 			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
 			sec_hdr = None
-			if self.cryptolayer is not None and not self.__rds_mode:
+			if self.cryptolayer is not None:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
@@ -974,7 +998,7 @@ class RDPConnection:
 			cli_ctrl.controlId = 0
 
 			sec_hdr = None
-			if self.cryptolayer is not None and not self.__rds_mode:
+			if self.cryptolayer is not None:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
@@ -993,7 +1017,7 @@ class RDPConnection:
 			cli_ctrl.controlId = 0
 
 			sec_hdr = None
-			if self.cryptolayer is not None and not self.__rds_mode:
+			if self.cryptolayer is not None:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
@@ -1008,7 +1032,7 @@ class RDPConnection:
 			cli_font = TS_FONT_LIST_PDU()
 			
 			sec_hdr = None
-			if self.cryptolayer is not None and not self.__rds_mode:
+			if self.cryptolayer is not None:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
