@@ -926,7 +926,10 @@ class RDPConnection:
 					if res.errorInfoRaw == 0:  # ERRINFO_NONE indicates RDS mode
 						logger.info('🔍 RDS server detected via SET_ERROR_INFO_PDU with ERRINFO_NONE')
 						self.__rds_mode = True
-						# Continue processing for RDS
+						# RDS mode: Skip standard sequence and go directly to RDS activation
+						logger.debug('📺 Starting RDS video activation sequence immediately')
+						await self.__rds_video_activation()
+						return True, None
 					else:
 						# we got an actual error!
 						raise Exception('Server replied with error! Code: %s ErrName: %s' % (hex(res.errorInfoRaw), res.errorInfo.name))
@@ -1021,25 +1024,25 @@ class RDPConnection:
 		try:
 			logger.debug('📺 === RDS VIDEO ACTIVATION SEQUENCE ===')
 			
-			# STEP 0: CLIENT_INFO_PDU (CRITICAL for RDS session creation)
-			logger.debug('🔐 STEP 0: Sending CLIENT_INFO_PDU for RDS session creation')
-			from aardwolf.protocol.T128.clientinfopdu import TS_INFO_PACKET, INFO_FLAG
+			# # STEP 0: CLIENT_INFO_PDU (CRITICAL for RDS session creation)
+			# logger.debug('🔐 STEP 0: Sending CLIENT_INFO_PDU for RDS session creation')
+			# from aardwolf.protocol.T128.clientinfopdu import TS_INFO_PACKET, INFO_FLAG
 			
-			client_info = TS_INFO_PACKET()
-			client_info.flags = INFO_FLAG.LOGONNOTIFY | INFO_FLAG.UNICODE | INFO_FLAG.ENABLEWINDOWSKEY
-			if self.credentials:
-				client_info.domain = self.credentials.domain or ''
-				client_info.userName = self.credentials.username or ''
-				client_info.password = self.credentials.secret or ''
-			client_info.clientAddress = '127.0.0.1'
-			client_info.clientDir = 'C:\\'
+			# client_info = TS_INFO_PACKET()
+			# client_info.flags = INFO_FLAG.LOGONNOTIFY | INFO_FLAG.UNICODE | INFO_FLAG.ENABLEWINDOWSKEY
+			# if self.credentials:
+			# 	client_info.domain = self.credentials.domain or ''
+			# 	client_info.userName = self.credentials.username or ''
+			# 	client_info.password = self.credentials.secret or ''
+			# client_info.clientAddress = '127.0.0.1'
+			# client_info.clientDir = 'C:\\'
 			
-			# Send CLIENT_INFO_PDU without encryption for RDS
-			await self.handle_out_data(client_info, None, None, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ STEP 0: CLIENT_INFO_PDU sent for RDS session creation')
+			# # Send CLIENT_INFO_PDU without encryption for RDS
+			# await self.handle_out_data(client_info, None, None, None, self.__joined_channels['MCS'].channel_id, False)
+			# logger.debug('✅ STEP 0: CLIENT_INFO_PDU sent for RDS session creation')
 			
-			# Small delay for server session processing
-			await asyncio.sleep(0.1)
+			# # Small delay for server session processing
+			# await asyncio.sleep(0.1)
 			
 			# STEP 1: SYNCHRONIZE PDU
 			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
@@ -1166,6 +1169,17 @@ class RDPConnection:
 				
 				await self.handle_out_data(refresh_rect_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 				logger.debug(f'✅ Additional REFRESH_RECT_PDU #{i+1} sent for session attachment')
+			
+			# STEP 8: Wait for Font Map PDU (Critical for input activation)
+			logger.debug('⏳ STEP 8: Waiting for Font Map PDU from server')
+			try:
+				data, err = await asyncio.wait_for(self.__joined_channels['MCS'].out_queue.get(), timeout=5.0)
+				if err is not None:
+					logger.warning(f'Font Map PDU wait error: {err}')
+				else:
+					logger.debug('✅ STEP 8: Font Map PDU received - input now enabled')
+			except asyncio.TimeoutError:
+				logger.warning('⚠️ Font Map PDU timeout - proceeding anyway (input may not work)')
 			
 			logger.debug('🎯 RDS video activation sequence completed with enhanced refresh!')
 			
