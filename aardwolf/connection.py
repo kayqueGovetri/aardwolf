@@ -736,65 +736,40 @@ class RDPConnection:
 
 			await self.handle_out_data(info, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
 			
+			# SYNCHRONIZE
 			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
 			data_hdr.streamID = STREAM_TYPE.MED
 			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
 
 			cli_sync = TS_SYNCHRONIZE_PDU()
 			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
-			
-			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			await self.handle_out_data(cli_sync, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+
+
+			# CONTROL - COOPERATE
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
-
 			cli_ctrl = TS_CONTROL_PDU()
 			cli_ctrl.action = CTRLACTION.COOPERATE
 			cli_ctrl.grantId = 0
 			cli_ctrl.controlId = 0
 
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
+			await self.handle_out_data(cli_ctrl, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 
-			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			
 
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
-			data_hdr.pduType2 = PDUTYPE2.CONTROL
-
+			# CONTROL - REQUEST_CONTROL
 			cli_ctrl = TS_CONTROL_PDU()
 			cli_ctrl.action = CTRLACTION.REQUEST_CONTROL
 			cli_ctrl.grantId = 0
 			cli_ctrl.controlId = 0
 
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
+			await self.handle_out_data(cli_ctrl, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 
-			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			# FONT LIST (esse sim com encrypt)
 			data_hdr.pduType2 = PDUTYPE2.FONTLIST
-
 			cli_font = TS_FONT_LIST_PDU()
-			
+
 			sec_hdr = None
 			if self.cryptolayer is not None:
 				sec_hdr = TS_SECURITY_HEADER()
