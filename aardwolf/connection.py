@@ -826,12 +826,18 @@ class RDPConnection:
 				
 				# raise Exception(error_msg)
 			
-			# res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
-			# for cap in res.capabilitySets:
-			# 	if cap.capabilitySetType == CAPSTYPE.GENERAL:
-			# 		cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
-			# 		if EXTRAFLAG.ENC_SALTED_CHECKSUM in cap.extraFlags and self.cryptolayer is not None:
-			# 			self.cryptolayer.use_encrypted_mac = True
+			# Parse PDU based on mode - RDS sends DATAPDU with error none, standard RDP sends DEMAND_ACTIVE_PDU
+			if not self.__rds_mode:
+				# Standard RDP: Parse DEMAND_ACTIVE_PDU
+				res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
+				for cap in res.capabilitySets:
+					if cap.capabilitySetType == CAPSTYPE.GENERAL:
+						cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
+						if EXTRAFLAG.ENC_SALTED_CHECKSUM in cap.extraFlags and self.cryptolayer is not None:
+							self.cryptolayer.use_encrypted_mac = True
+			else:
+				# RDS mode: data contains DATAPDU with SET_ERROR_INFO_PDU (error none) - already processed above
+				logger.debug('🔍 RDS mode: Skipping DEMAND_ACTIVE_PDU parsing, using DATAPDU with error none')
 			
 			caps = []
 			# now we send our capabilities
@@ -932,16 +938,7 @@ class RDPConnection:
 				else:
 					raise Exception('Unexpected reply! %s' % shd.pduType2.name)
 			else:
-				# RDS servers may not send DATAPDU after CONFIRMACTIVEPDU
-				# Check if this is RDS mode and handle accordingly
-				if self.__rds_mode:
-					logger.debug('🔍 RDS server - no DATAPDU received after CONFIRMACTIVEPDU, proceeding with RDS capability exchange')
-					# For RDS mode, skip standard synchronization and go directly to RDS sequence
-					logger.debug('📺 Starting RDS capability exchange sequence')
-					# await self.__rds_video_activation()
-					# return True, None
-				else:
-					raise Exception('Unexpected reply! %s' % shc.pduType.name)
+				raise Exception('Unexpected reply! %s' % shc.pduType.name)
 
 			# RDS mode is now handled earlier in the method before DEMANDACTIVEPDU validation
 
