@@ -855,6 +855,12 @@ class RDPConnection:
 
 			data = data[data_start_offset:]
 			shc = TS_SHARECONTROLHEADER.from_bytes(data)
+			
+			logger.debug("✅ TS_SHARECONTROLHEADER interpretado com sucesso:")
+			logger.debug(f"    • pduType: {shc.pduType}")
+			logger.debug(f"    • pduVersion: {shc.pduVersion}")
+			logger.debug(f"    • pduSource: {shc.pduSource}")
+			logger.debug(f"    • totalLength: {shc.totalLength}")
 			if shc.pduType != PDUTYPE.DEMANDACTIVEPDU:
 				# Check for RDS mode detection before throwing error
 				if shc.pduType == PDUTYPE.DATAPDU:
