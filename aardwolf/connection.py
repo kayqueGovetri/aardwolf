@@ -735,43 +735,73 @@ class RDPConnection:
 			sec_hdr.flagsHi = 0
 
 			await self.handle_out_data(info, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+			
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
 
-			p = TS_SYNCHRONIZE_PDU()
+			cli_sync = TS_SYNCHRONIZE_PDU()
+			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
 			sec_hdr = None
 			if self.cryptolayer is not None:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
-			await self.handle_out_data(p, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+			
+			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 
-			p = TS_CONTROL_PDU()
-			p.action = CTRLACTION.COOPERATE
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
-			await self.handle_out_data(p, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
-		
-			p = TS_CONTROL_PDU()
-			p.action = CTRLACTION.REQUEST_CONTROL
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
-			await self.handle_out_data(p, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.CONTROL
 
-			p = TS_FONT_LIST_PDU()
-			p.numFonts = 0
-			p.listFlags = 0x0001  # FONTLIST_FIRST | FONTLIST_LAST
-			p.fonts = []
+			cli_ctrl = TS_CONTROL_PDU()
+			cli_ctrl.action = CTRLACTION.COOPERATE
+			cli_ctrl.grantId = 0
+			cli_ctrl.controlId = 0
+
 			sec_hdr = None
 			if self.cryptolayer is not None:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
-			await self.handle_out_data(p, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+
+			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			
+
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.CONTROL
+
+			cli_ctrl = TS_CONTROL_PDU()
+			cli_ctrl.action = CTRLACTION.REQUEST_CONTROL
+			cli_ctrl.grantId = 0
+			cli_ctrl.controlId = 0
+
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+
+			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.FONTLIST
+
+			cli_font = TS_FONT_LIST_PDU()
+			
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+
+			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 
 			return True, None
 		except Exception as e:
