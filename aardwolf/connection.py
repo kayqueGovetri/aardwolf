@@ -765,49 +765,57 @@ class RDPConnection:
 	
 	async def __handle_mandatory_capability_exchange(self):
 		try:
-			SHARE_ID = 0x103EA
-			channel_id = self.__joined_channels['MCS'].channel_id
-
-			# ---------- 1. Receber primeiro PDU do servidor ----------
+			logger.debug("Step 1: Waiting server response after license...")
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
 			if err is not None:
 				raise err
+			logger.debug(f"Step 1: Received {len(data)} bytes from server")
 
 			data_start_offset = 0
 			if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
-				data_start_offset = 4  # parte de negociação sem criptografia
-
+				data_start_offset = 4
 			data = data[data_start_offset:]
 			shc = TS_SHARECONTROLHEADER.from_bytes(data)
+			logger.debug(f"Step 1: Parsed SHARECONTROLHEADER: {shc.pduType.name}")
 
-			# RDS moderno: sempre vem DATAPDU com SET_ERROR_INFO_PDU antes de CONFIRM_ACTIVE
-			if shc.pduType == PDUTYPE.DATAPDU:
+			logger.debug("Step 2: Handling DEMAND_ACTIVE or DATAPDU with SET_ERROR_INFO...")
+			if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
+				res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
+				logger.debug(f"Step 2: DEMAND_ACTIVE_PDU received with {len(res.capabilitySets)} capability sets")
+				for cap in res.capabilitySets:
+					if cap.capabilitySetType == CAPSTYPE.GENERAL:
+						cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
+						logger.debug(f"Step 2: GENERAL capability extraFlags: {cap.extraFlags}")
+						if EXTRAFLAG.ENC_SALTED_CHECKSUM in cap.extraFlags and self.cryptolayer:
+							self.cryptolayer.use_encrypted_mac = True
+							logger.debug("Step 2: Encrypted MAC enabled")
+
+			elif shc.pduType == PDUTYPE.DATAPDU:
 				shd = TS_SHAREDATAHEADER.from_bytes(data)
+				logger.debug(f"Step 2: DATAPDU received, Type2: {shd.pduType2.name}")
 				if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
 					res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
+					logger.debug(f"Step 2: SET_ERROR_INFO_PDU errorInfoRaw: {res.errorInfoRaw}")
 					if res.errorInfoRaw != 0:
-						raise Exception(f'Server replied with error! {res.errorInfo.name}')
+						raise Exception(f'Server replied with error! Code: {hex(res.errorInfoRaw)} ErrName: {res.errorInfo.name}')
 				else:
-					# Possível SYNCHRONIZE, mas geralmente é SET_ERROR_INFO
-					logger.debug(f'Unexpected DATAPDU: {shd.pduType2.name}, continuing handshake')
+					raise Exception(f'Unexpected DATAPDU: {shd.pduType2.name}')
 			else:
 				raise Exception(f'Unexpected PDU: {shc.pduType.name}')
 
-			# ---------- 2. Preparar capability sets ----------
+			logger.debug("Step 3: Preparing client capabilities...")
+			SHARE_ID = 0x103EA
+			channel_id = self.__joined_channels['MCS'].channel_id
 			caps = []
 
-			# GENERAL
 			cap = TS_GENERAL_CAPABILITYSET()
 			cap.osMajorType = OSMAJORTYPE.WINDOWS
 			cap.osMinorType = OSMINORTYPE.WINDOWS_NT
-			cap.extraFlags = (
-				EXTRAFLAG.FASTPATH_OUTPUT_SUPPORTED |
-				EXTRAFLAG.NO_BITMAP_COMPRESSION_HDR |
-				EXTRAFLAG.LONG_CREDENTIALS_SUPPORTED
-			)
+			cap.extraFlags = EXTRAFLAG.FASTPATH_OUTPUT_SUPPORTED | EXTRAFLAG.NO_BITMAP_COMPRESSION_HDR | EXTRAFLAG.LONG_CREDENTIALS_SUPPORTED
 			if self.cryptolayer and getattr(self.cryptolayer, 'use_encrypted_mac', False):
 				cap.extraFlags |= EXTRAFLAG.ENC_SALTED_CHECKSUM
 			caps.append(cap)
+			logger.debug(f"Step 3: Added GENERAL capability: {cap.extraFlags}")
 
 			# BITMAP
 			cap = TS_BITMAP_CAPABILITYSET()
@@ -815,39 +823,33 @@ class RDPConnection:
 			cap.desktopWidth = self.iosettings.video_width
 			cap.desktopHeight = self.iosettings.video_height
 			caps.append(cap)
+			logger.debug("Step 3: Added BITMAP capability")
 
 			# ORDER
 			cap = TS_ORDER_CAPABILITYSET()
-			cap.orderFlags = ORDERFLAG.ZEROBOUNDSDELTASSUPPORT | ORDERFLAG.NEGOTIATEORDERSUPPORT
-			cap.orderFlags |= ORDERFLAG.SOLIDPATTERNBRUSHONLY
+			cap.orderFlags = ORDERFLAG.ZEROBOUNDSDELTASSUPPORT | ORDERFLAG.NEGOTIATEORDERSUPPORT | ORDERFLAG.SOLIDPATTERNBRUSHONLY
 			caps.append(cap)
+			logger.debug("Step 3: Added ORDER capability")
 
-			# BITMAPCACHE, POINTER, INPUT
-			caps.append(TS_BITMAPCACHE_CAPABILITYSET())
-			caps.append(TS_POINTER_CAPABILITYSET())
+			# Outros capabilities
+			caps.extend([
+				TS_BITMAPCACHE_CAPABILITYSET(),
+				TS_POINTER_CAPABILITYSET(),
+				TS_INPUT_CAPABILITYSET(inputFlags=INPUT_FLAG.SCANCODES,
+									keyboardLayout=self.iosettings.keyboard_layout,
+									keyboardType=self.iosettings.keyboard_type,
+									keyboardSubType=self.iosettings.keyboard_subtype,
+									keyboardFunctionKey=self.iosettings.keyboard_functionkey),
+				TS_BRUSH_CAPABILITYSET(),
+				TS_GLYPHCACHE_CAPABILITYSET(),
+				TS_OFFSCREEN_CAPABILITYSET(),
+				TS_VIRTUALCHANNEL_CAPABILITYSET(flags=VCCAPS.COMPR_CS_8K | VCCAPS.COMPR_SC),
+				TS_SOUND_CAPABILITYSET()
+			])
+			logger.debug(f"Step 3: Added {len(caps)-3} other capabilities")
 
-			cap = TS_INPUT_CAPABILITYSET()
-			cap.inputFlags = INPUT_FLAG.SCANCODES
-			cap.keyboardLayout = self.iosettings.keyboard_layout
-			cap.keyboardType = self.iosettings.keyboard_type
-			cap.keyboardSubType = self.iosettings.keyboard_subtype
-			cap.keyboardFunctionKey = self.iosettings.keyboard_functionkey
-			caps.append(cap)
-
-			# BRUSH, GLYPHCACHE, OFFSCREEN
-			caps.append(TS_BRUSH_CAPABILITYSET())
-			caps.append(TS_GLYPHCACHE_CAPABILITYSET())
-			caps.append(TS_OFFSCREEN_CAPABILITYSET())
-
-			# VIRTUALCHANNEL
-			cap = TS_VIRTUALCHANNEL_CAPABILITYSET()
-			cap.flags = VCCAPS.COMPR_CS_8K | VCCAPS.COMPR_SC
-			caps.append(cap)
-
-			# SOUND
-			caps.append(TS_SOUND_CAPABILITYSET())
-
-			# ---------- 3. Enviar CONFIRM_ACTIVE ----------
+			# ---------- 4. Enviar CONFIRM_ACTIVE ----------
+			logger.debug("Step 4: Sending CONFIRM_ACTIVE...")
 			share_hdr = TS_SHARECONTROLHEADER()
 			share_hdr.pduType = PDUTYPE.CONFIRMACTIVEPDU
 			share_hdr.pduVersion = 1
@@ -866,60 +868,63 @@ class RDPConnection:
 				sec_hdr.flagsHi = 0
 
 			await self.handle_out_data(msg, sec_hdr, None, share_hdr, channel_id, False)
+			logger.debug("Step 4: CONFIRM_ACTIVE sent")
 
-			# ---------- 4. Receber resposta do servidor (SYNCHRONIZE esperado) ----------
+			# ---------- 5. Receber SYNCHRONIZE ou SET_ERROR_INFO ----------
+			logger.debug("Step 5: Waiting SYNCHRONIZE or SET_ERROR_INFO...")
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
-			if err:
+			if err is not None:
 				raise err
 
+			data = data[data_start_offset:]
 			shc = TS_SHARECONTROLHEADER.from_bytes(data)
+			logger.debug(f"Step 5: Received PDU type: {shc.pduType.name}")
+
 			if shc.pduType == PDUTYPE.DATAPDU:
 				shd = TS_SHAREDATAHEADER.from_bytes(data)
-				if shd.pduType2 == PDUTYPE2.SYNCHRONIZE:
-					res = TS_SYNCHRONIZE_PDU.from_bytes(data)
-				elif shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
-					# RDP pode enviar outro SET_ERROR_INFO antes do SYNCHRONIZE
+				logger.debug(f"Step 5: DATAPDU Type2: {shd.pduType2.name}")
+				if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
 					res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
+					logger.debug(f"Step 5: SET_ERROR_INFO_PDU errorInfoRaw: {res.errorInfoRaw}")
 					if res.errorInfoRaw != 0:
-						raise Exception(f'Server replied with error! {res.errorInfo.name}')
+						raise Exception(f'Server replied with error! Code: {hex(res.errorInfoRaw)} ErrName: {res.errorInfo.name}')
+				elif shd.pduType2 == PDUTYPE2.SYNCHRONIZE:
+					TS_SYNCHRONIZE_PDU.from_bytes(data)
+					logger.debug("Step 5: SYNCHRONIZE received")
 				else:
 					raise Exception(f'Unexpected DATAPDU: {shd.pduType2.name}')
 			else:
 				raise Exception(f'Unexpected PDU: {shc.pduType.name}')
 
-			# ---------- 5. Enviar SYNCHRONIZE ----------
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = SHARE_ID
-			data_hdr.streamID = STREAM_TYPE.MED
-			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
-
-			cli_sync = TS_SYNCHRONIZE_PDU()
-			cli_sync.targetUser = channel_id
+			# ---------- 6. Enviar SYNCHRONIZE ----------
+			logger.debug("Step 6: Sending SYNCHRONIZE...")
+			data_hdr = TS_SHAREDATAHEADER(shareID=SHARE_ID, streamID=STREAM_TYPE.MED, pduType2=PDUTYPE2.SYNCHRONIZE)
+			cli_sync = TS_SYNCHRONIZE_PDU(targetUser=channel_id)
 			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, channel_id, False)
+			logger.debug("Step 6: SYNCHRONIZE sent")
 
-			# ---------- 6. Enviar CONTROL COOPERATE ----------
+			# ---------- 7. Enviar CONTROL COOPERATE e REQUEST_CONTROL ----------
+			logger.debug("Step 7: Sending CONTROL COOPERATE and REQUEST_CONTROL...")
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
-			cli_ctrl = TS_CONTROL_PDU()
-			cli_ctrl.action = CTRLACTION.COOPERATE
-			cli_ctrl.grantId = 0
-			cli_ctrl.controlId = 0
-			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
-
-			# ---------- 7. Enviar CONTROL REQUEST_CONTROL ----------
-			cli_ctrl.action = CTRLACTION.REQUEST_CONTROL
-			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
+			for action in (CTRLACTION.COOPERATE, CTRLACTION.REQUEST_CONTROL):
+				cli_ctrl = TS_CONTROL_PDU(action=action, grantId=0, controlId=0)
+				await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
+				logger.debug(f"Step 7: CONTROL action {action.name} sent")
 
 			# ---------- 8. Enviar FONTLIST ----------
+			logger.debug("Step 8: Sending FONTLIST...")
 			data_hdr.pduType2 = PDUTYPE2.FONTLIST
 			cli_font = TS_FONT_LIST_PDU()
 			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, channel_id, False)
+			logger.debug("Step 8: FONTLIST sent")
 
+			logger.debug("All steps completed successfully")
 			return True, None
 
 		except Exception as e:
+			logger.error(f"Exception caught: {e}", exc_info=True)
 			return None, e
-
-		
+			
 	async def send_disconnect(self):
 		"""Sends a disconnect request to the server. This will NOT close the connection!"""
 		try:
