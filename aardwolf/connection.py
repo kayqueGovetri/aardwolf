@@ -785,6 +785,17 @@ class RDPConnection:
 							if res.errorInfoRaw == 0:  # ERRINFO_NONE indicates RDS mode
 								logger.info('🔍 RDS server detected via SET_ERROR_INFO_PDU with ERRINFO_NONE')
 								self.__rds_mode = True
+								
+								# Wait for server response after CONFIRMACTIVEPDU for RDS
+								logger.debug('🔍 RDS mode: Waiting for server response after CONFIRMACTIVEPDU')
+								try:
+									data, err = await asyncio.wait_for(self.__joined_channels['MCS'].out_queue.get(), timeout=3.0)
+									if err is not None:
+										raise err
+									logger.debug('✅ RDS server acknowledged CONFIRMACTIVEPDU')
+								except asyncio.TimeoutError:
+									logger.debug('⏰ RDS server timeout after CONFIRMACTIVEPDU - proceeding anyway')
+								
 								logger.debug('📺 Starting RDS capability exchange sequence')
 								await self.__rds_video_activation()
 								return True, None
@@ -894,6 +905,7 @@ class RDPConnection:
 				sec_hdr.flagsHi = 0
 
 			await self.handle_out_data(msg, sec_hdr, None, share_hdr, self.__joined_channels['MCS'].channel_id, False)
+			
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
 			if err is not None:
 				raise err
@@ -1012,8 +1024,48 @@ class RDPConnection:
 		try:
 			logger.debug('📺 === RDS VIDEO ACTIVATION SEQUENCE ===')
 			
-			# Skip CLIENT_INFO_PDU for RDS - credentials already validated in earlier handshakes
-			logger.debug('📋 Skipping CLIENT_INFO_PDU for RDS - credentials already validated')
+			# STEP 0: CLIENT_INFO_PDU - Critical for RDS session creation
+			logger.debug('📋 STEP 0: Sending CLIENT_INFO_PDU for RDS session creation')
+			from aardwolf.protocol.T128.clientinfopdu import TS_INFO_PACKET, TS_EXTENDED_INFO_PACKET, INFO_TYPE, PERF
+			
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.compressedType = 0
+			data_hdr.pduType2 = PDUTYPE2.CLIENT_INFO_PDU
+			
+			info_pdu = TS_INFO_PACKET()
+			info_pdu.CodePage = 0
+			info_pdu.flags = INFO_TYPE.LOGONNOTIFY | INFO_TYPE.UNICODE
+			info_pdu.cbDomain = len(self.credentials.domain) * 2 if self.credentials.domain else 0
+			info_pdu.cbUserName = len(self.credentials.username) * 2 if self.credentials.username else 0
+			info_pdu.cbPassword = len(self.credentials.secret) * 2 if self.credentials.secret else 0
+			info_pdu.cbAlternateShell = 0
+			info_pdu.cbWorkingDir = 0
+			info_pdu.Domain = self.credentials.domain if self.credentials.domain else ''
+			info_pdu.UserName = self.credentials.username if self.credentials.username else ''
+			info_pdu.Password = self.credentials.secret if self.credentials.secret else ''
+			info_pdu.AlternateShell = ''
+			info_pdu.WorkingDir = ''
+			
+			# Extended info for RDS
+			ext_info = TS_EXTENDED_INFO_PACKET()
+			ext_info.clientAddressFamily = 2  # AF_INET
+			ext_info.cbClientAddress = 30
+			ext_info.clientAddress = '127.0.0.1'
+			ext_info.cbClientDir = 64
+			ext_info.clientDir = 'C:\\Windows\\System32\\mstscax.dll'
+			ext_info.clientTimeZone.Bias = 0
+			ext_info.clientSessionId = 0
+			ext_info.performanceFlags = PERF.DISABLE_WALLPAPER | PERF.DISABLE_FULLWINDOWDRAG | PERF.DISABLE_MENUANIMATIONS
+			
+			info_pdu.extraInfo = ext_info
+			
+			await self.handle_out_data(info_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ STEP 0: CLIENT_INFO_PDU sent for RDS session creation')
+			
+			# Small delay for server session processing
+			await asyncio.sleep(0.1)
 			
 			# STEP 1: SYNCHRONIZE PDU
 			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
@@ -1120,7 +1172,28 @@ class RDPConnection:
 			await self.handle_out_data(persistent_keys_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 			logger.debug('✅ STEP 7: PERSISTENT_KEY_LIST_PDU sent for RDS')
 			
-			logger.debug('🎯 RDS video activation sequence completed!')
+			# Additional refresh requests for session attachment (based on memory findings)
+			logger.debug('🔄 Sending additional REFRESH_RECT_PDU requests for session attachment')
+			for i in range(3):
+				await asyncio.sleep(0.5)  # Small delay between requests
+				
+				data_hdr = TS_SHAREDATAHEADER()
+				data_hdr.shareID = 0x103EA
+				data_hdr.streamID = STREAM_TYPE.LOW
+				data_hdr.compressedType = 0
+				data_hdr.pduType2 = PDUTYPE2.REFRESH_RECT
+				
+				# Create refresh rect PDU manually - full screen refresh
+				refresh_rect_data = b'\x01\x00\x00\x00'  # numberOfAreas = 1
+				refresh_rect_data += b'\x00\x00\x00\x00'  # left = 0
+				refresh_rect_data += b'\x00\x00\x00\x00'  # top = 0
+				refresh_rect_data += (self.iosettings.video_width).to_bytes(2, 'little') + b'\x00\x00'  # right
+				refresh_rect_data += (self.iosettings.video_height).to_bytes(2, 'little') + b'\x00\x00'  # bottom
+				
+				await self.handle_out_data(refresh_rect_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+				logger.debug(f'✅ Additional REFRESH_RECT_PDU #{i+1} sent for session attachment')
+			
+			logger.debug('🎯 RDS video activation sequence completed with enhanced refresh!')
 			
 		except Exception as e:
 			logger.error(f'RDS video activation failed: {e}')
