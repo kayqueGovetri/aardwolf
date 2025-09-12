@@ -797,8 +797,8 @@ class RDPConnection:
 									logger.debug('⏰ RDS server timeout after CONFIRMACTIVEPDU - proceeding anyway')
 								
 								logger.debug('📺 Starting RDS capability exchange sequence')
-								# await self.__rds_video_activation()
-								# return True, None
+								await self.__rds_video_activation()
+								return True, None
 							else:
 								# we got an actual error!
 								raise Exception('Server replied with error! Code: %s ErrName: %s' % (hex(res.errorInfoRaw), res.errorInfo.name))
@@ -1021,8 +1021,25 @@ class RDPConnection:
 		try:
 			logger.debug('📺 === RDS VIDEO ACTIVATION SEQUENCE ===')
 			
-			# RDS servers don't require CLIENT_INFO_PDU - credentials already validated in earlier handshake
-			# Starting directly with standard RDS capability exchange sequence
+			# STEP 0: CLIENT_INFO_PDU (CRITICAL for RDS session creation)
+			logger.debug('🔐 STEP 0: Sending CLIENT_INFO_PDU for RDS session creation')
+			from aardwolf.protocol.T128.clientinfopdu import TS_INFO_PACKET, INFO_FLAG
+			
+			client_info = TS_INFO_PACKET()
+			client_info.flags = INFO_FLAG.LOGONNOTIFY | INFO_FLAG.UNICODE | INFO_FLAG.ENABLEWINDOWSKEY
+			if self.credentials:
+				client_info.domain = self.credentials.domain or ''
+				client_info.userName = self.credentials.username or ''
+				client_info.password = self.credentials.secret or ''
+			client_info.clientAddress = '127.0.0.1'
+			client_info.clientDir = 'C:\\'
+			
+			# Send CLIENT_INFO_PDU without encryption for RDS
+			await self.handle_out_data(client_info, None, None, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ STEP 0: CLIENT_INFO_PDU sent for RDS session creation')
+			
+			# Small delay for server session processing
+			await asyncio.sleep(0.1)
 			
 			# STEP 1: SYNCHRONIZE PDU
 			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
