@@ -746,11 +746,17 @@ class RDPConnection:
 				raise err
 			
 			res = self._t125_per_codec.decode('DomainMCSPDU', data)
+			logger.debug(f"Decoded license PDU: {res}")
+
 			if res[0] == 'tokenInhibitConfirm':
+				logger.debug(f"tokenInhibitConfirm received: {res[1]}")
 				if res[1]['result'] != 'rt-successful':
+					logger.debug(f"License result not successful: {res[1]['result']}")
 					raise Exception('License error! tokenInhibitConfirm:result not successful')
 			else:
+				logger.debug(f"Unexpected license PDU type: {res[0]}")
 				raise Exception('tokenInhibitConfirm did not show up in reply!')
+
 
 			return True, None
 		except Exception as e:
