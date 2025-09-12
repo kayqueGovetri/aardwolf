@@ -1496,7 +1496,11 @@ class RDPConnection:
 		try:
 			if is_fastpath is False:
 				#print('Sending data on channel "%s(%s)"' % (self.name, self.channel_id))
-				data = dataobj.to_bytes()
+				# Handle both objects with to_bytes() method and raw bytes
+				if isinstance(dataobj, bytes):
+					data = dataobj
+				else:
+					data = dataobj.to_bytes()
 				hdrs = b''
 				if sharecontrol_hdr is not None:
 					sharecontrol_hdr.pduSource = channel_id
