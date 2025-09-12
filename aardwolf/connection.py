@@ -1112,7 +1112,7 @@ class RDPConnection:
 			data_hdr.shareID = 0x103EA
 			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.compressedType = 0
-			data_hdr.pduType2 = PDUTYPE2.PERSISTENT_KEY_LIST
+			data_hdr.pduType2 = PDUTYPE2.BITMAPCACHE_PERSISTENT_LIST
 			
 			# Create empty persistent key list PDU manually
 			persistent_keys_data = b'\x00\x00\x00\x00\x00\x00'  # Empty cache entries
