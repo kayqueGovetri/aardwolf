@@ -1077,47 +1077,48 @@ class RDPConnection:
 			await self.handle_out_data(fontlist_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 			logger.debug('✅ STEP 4: FONTLIST PDU sent for RDS')
 			
-			# STEP 5: REFRESH_RECT_PDU
-			from aardwolf.protocol.T128.refreshrectpdu import TS_REFRESH_RECT_PDU
+			# STEP 5: REFRESH_RECT_PDU - Create simple PDU structure
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
 			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.compressedType = 0
 			data_hdr.pduType2 = PDUTYPE2.REFRESH_RECT
 			
-			refresh_rect = TS_REFRESH_RECT_PDU()
-			refresh_rect.numberOfAreas = 1
-			refresh_rect.areasToRefresh = [{'left': 0, 'top': 0, 'right': self.iosettings.video_width, 'bottom': self.iosettings.video_height}]
+			# Create simple refresh rect PDU manually since module doesn't exist
+			refresh_rect_data = b'\x01\x00\x00\x00'  # numberOfAreas = 1
+			refresh_rect_data += b'\x00\x00\x00\x00'  # left = 0
+			refresh_rect_data += b'\x00\x00\x00\x00'  # top = 0
+			refresh_rect_data += (self.iosettings.video_width).to_bytes(2, 'little') + b'\x00\x00'  # right
+			refresh_rect_data += (self.iosettings.video_height).to_bytes(2, 'little') + b'\x00\x00'  # bottom
 			
-			await self.handle_out_data(refresh_rect, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			await self.handle_out_data(refresh_rect_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 			logger.debug('✅ STEP 5: REFRESH_RECT_PDU sent for RDS')
 			
-			# STEP 6: SUPPRESS_OUTPUT_PDU
-			from aardwolf.protocol.T128.suppressoutputpdu import TS_SUPPRESS_OUTPUT_PDU
+			# STEP 6: SUPPRESS_OUTPUT_PDU - Create manually
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
 			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.compressedType = 0
 			data_hdr.pduType2 = PDUTYPE2.SUPPRESS_OUTPUT
 			
-			suppress_output = TS_SUPPRESS_OUTPUT_PDU()
-			suppress_output.allowDisplayUpdates = 1
+			# Create suppress output PDU manually - allowDisplayUpdates = 1
+			suppress_output_data = b'\x01'  # allowDisplayUpdates = 1
 			
-			await self.handle_out_data(suppress_output, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ SUPPRESS_OUTPUT_PDU sent for RDS')
+			await self.handle_out_data(suppress_output_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ STEP 6: SUPPRESS_OUTPUT_PDU sent for RDS')
 			
-			# STEP 7: PERSISTENT_KEY_LIST_PDU
-			from aardwolf.protocol.T128.persistentkeylistpdu import TS_PERSISTENT_KEY_LIST_PDU
+			# STEP 7: PERSISTENT_KEY_LIST_PDU - Create manually
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
 			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.compressedType = 0
 			data_hdr.pduType2 = PDUTYPE2.PERSISTENT_KEY_LIST
 			
-			persistent_keys = TS_PERSISTENT_KEY_LIST_PDU()
+			# Create empty persistent key list PDU manually
+			persistent_keys_data = b'\x00\x00\x00\x00\x00\x00'  # Empty cache entries
 			
-			await self.handle_out_data(persistent_keys, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ PERSISTENT_KEY_LIST_PDU sent for RDS')
+			await self.handle_out_data(persistent_keys_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			logger.debug('✅ STEP 7: PERSISTENT_KEY_LIST_PDU sent for RDS')
 			
 			logger.debug('🎯 RDS video activation sequence completed!')
 			
