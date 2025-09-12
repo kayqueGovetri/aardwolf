@@ -38,7 +38,6 @@ from aardwolf.protocol.pdu.capabilities.input import TS_INPUT_CAPABILITYSET, INP
 from aardwolf.protocol.pdu.capabilities.pointer import TS_POINTER_CAPABILITYSET
 from aardwolf.protocol.pdu.capabilities.bitmapcache import TS_BITMAPCACHE_CAPABILITYSET
 from aardwolf.protocol.pdu.capabilities.order import TS_ORDER_CAPABILITYSET, ORDERFLAG
-
 from aardwolf.protocol.T124.GCCPDU import GCCPDU
 from aardwolf.protocol.T124.userdata import TS_UD, TS_SC
 from aardwolf.protocol.T124.userdata.constants import TS_UD_TYPE, HIGH_COLOR_DEPTH, ENCRYPTION_FLAG, SUPPORTED_COLOR_DEPTH, \
@@ -736,6 +735,20 @@ class RDPConnection:
 			sec_hdr.flagsHi = 0
 
 			await self.handle_out_data(info, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+
+			p = TS_SYNCHRONIZE_PDU()
+			await self.handle_out_data(p, None, None, None, self.__joined_channels['MCS'].channel_id, False)
+
+			p = TS_CONTROL_PDU()
+			p.action = CTRLACTION.REQUEST_CONTROL
+
+			await self.handle_out_data(p, None, None, None, self.__joined_channels['MCS'].channel_id, False)
+
+			p = TS_FONT_LIST_PDU()
+			p.numFonts = 0
+			p.fonts = []
+			await self.handle_out_data(p, None, None, None, self.__joined_channels['MCS'].channel_id, False)
+
 			return True, None
 		except Exception as e:
 			return None, e
@@ -784,21 +797,11 @@ class RDPConnection:
 							res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
 							if res.errorInfoRaw == 0:  # ERRINFO_NONE indicates RDS mode
 								logger.info('🔍 RDS server detected via SET_ERROR_INFO_PDU with ERRINFO_NONE')
-								self.__rds_mode = True
-								pass
-								# Wait for server response after CONFIRMACTIVEPDU for RDS
-								logger.debug('🔍 RDS mode: Waiting for server response after CONFIRMACTIVEPDU')
-								try:
-									data, err = await asyncio.wait_for(self.__joined_channels['MCS'].out_queue.get(), timeout=3.0)
-									if err is not None:
-										raise err
-									logger.debug('✅ RDS server acknowledged CONFIRMACTIVEPDU')
-								except asyncio.TimeoutError:
-									logger.debug('⏰ RDS server timeout after CONFIRMACTIVEPDU - proceeding anyway')
-								
+								# self.__rds_mode = True
+								# pass
 								logger.debug('📺 Starting RDS capability exchange sequence')
-								await self.__rds_video_activation()
-								return True, None
+								#await self.__rds_video_activation()
+								# return True, None
 							else:
 								# we got an actual error!
 								raise Exception('Server replied with error! Code: %s ErrName: %s' % (hex(res.errorInfoRaw), res.errorInfo.name))
