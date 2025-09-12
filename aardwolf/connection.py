@@ -877,61 +877,54 @@ class RDPConnection:
 
 			await self.handle_out_data(msg, sec_hdr, None, share_hdr, channel_id, False)
 			logger.debug("Step 4: CONFIRM_ACTIVE sent")
+			# ---------- Step 5: Wait for SYNCHRONIZE (with timeout) ----------
+			try:
+				data, err = await asyncio.wait_for(
+					self.__joined_channels['MCS'].out_queue.get(),
+					timeout=2  # timeout curto, servidor pode não enviar
+				)
+				if err is not None:
+					raise err
 
-			# ---------- 5. Receber SYNCHRONIZE ou SET_ERROR_INFO ----------
-			logger.debug("Step 5: Waiting SYNCHRONIZE or SET_ERROR_INFO...")
-			data, err = await self.__joined_channels['MCS'].out_queue.get()
-			if err is not None:
-				raise err
-
-			data = data[data_start_offset:]
-			shc = TS_SHARECONTROLHEADER.from_bytes(data)
-			if shc.pduType == PDUTYPE.DATAPDU:
-				shd = TS_SHAREDATAHEADER.from_bytes(data)
-				if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
-					res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
-					if res.errorInfoRaw != 0:
-						raise Exception(f'Server replied with error! Code: {hex(res.errorInfoRaw)} ErrName: {res.errorInfo.name}')
-					logger.debug("Step 5: SET_ERROR_INFO_PDU with errorInfoRaw == 0, continuing")
-				elif shd.pduType2 == PDUTYPE2.SYNCHRONIZE:
-					TS_SYNCHRONIZE_PDU.from_bytes(data)
-					logger.debug("Step 5: SYNCHRONIZE received")
+				data = data[data_start_offset:]
+				shc = TS_SHARECONTROLHEADER.from_bytes(data)
+				if shc.pduType == PDUTYPE.DATAPDU:
+					shd = TS_SHAREDATAHEADER.from_bytes(data)
+					if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
+						res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
+						if res.errorInfoRaw != 0:
+							raise Exception(f'Server replied with error! Code: {hex(res.errorInfoRaw)} ErrName: {res.errorInfo.name}')
+					elif shd.pduType2 == PDUTYPE2.SYNCHRONIZE:
+						TS_SYNCHRONIZE_PDU.from_bytes(data)
+					else:
+						logger.debug(f"Step 5: Unexpected DATAPDU: {shd.pduType2.name}, ignoring")
 				else:
-					raise Exception(f'Unexpected DATAPDU: {shd.pduType2.name}')
-			else:
-				raise Exception(f'Unexpected PDU: {shc.pduType.name}')
+					logger.debug(f"Step 5: Unexpected PDU: {shc.pduType.name}, ignoring")
+			except asyncio.TimeoutError:
+				logger.debug("Step 5: No SYNCHRONIZE received from server, continuing normally")
 
-			# ---------- 6. Enviar SYNCHRONIZE ----------
-			logger.debug("Step 6: Sending SYNCHRONIZE...")
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = SHARE_ID
-			data_hdr.streamID = STREAM_TYPE.MED
-			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
-			
-			cli_sync = TS_SYNCHRONIZE_PDU()
-			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
+			# ---------- Step 6: Send SYNCHRONIZE ----------
+			data_hdr = TS_SHAREDATAHEADER(shareID=SHARE_ID, streamID=STREAM_TYPE.MED, pduType2=PDUTYPE2.SYNCHRONIZE)
+			cli_sync = TS_SYNCHRONIZE_PDU(targetUser=channel_id)
+			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, channel_id, False)
 
-			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-
-			# ---------- 7. Enviar CONTROL COOPERATE e REQUEST_CONTROL ----------
-			logger.debug("Step 7: Sending CONTROL COOPERATE and REQUEST_CONTROL...")
+			# ---------- Step 7: Send CONTROL COOPERATE and REQUEST_CONTROL ----------
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
 			for action in (CTRLACTION.COOPERATE, CTRLACTION.REQUEST_CONTROL):
 				cli_ctrl = TS_CONTROL_PDU(action=action, grantId=0, controlId=0)
-				await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+				await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
 
-			# ---------- 8. Enviar FONTLIST ----------
-			logger.debug("Step 8: Sending FONTLIST...")
+			# ---------- Step 8: Send FONTLIST ----------
 			data_hdr.pduType2 = PDUTYPE2.FONTLIST
 			cli_font = TS_FONT_LIST_PDU()
 			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, channel_id, False)
 
-			logger.debug("Mandatory capability exchange completed successfully")
 			return True, None
 
 		except Exception as e:
-			logger.error(f"Exception caught: {e}", exc_info=True)
+			logger.error(f"Exception caught in capability exchange: {e}")
 			return None, e
+
 
 			
 	async def send_disconnect(self):
