@@ -904,14 +904,21 @@ class RDPConnection:
 				logger.debug("Step 5: No SYNCHRONIZE received from server, continuing normally")
 
 			# ---------- Step 6: Send SYNCHRONIZE ----------
-			data_hdr = TS_SHAREDATAHEADER(shareID=SHARE_ID, streamID=STREAM_TYPE.MED, pduType2=PDUTYPE2.SYNCHRONIZE)
-			cli_sync = TS_SYNCHRONIZE_PDU(targetUser=channel_id)
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = SHARE_ID
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
+			cli_sync = TS_SYNCHRONIZE_PDU()
+			cli_sync.targetUser = channel_id
 			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, channel_id, False)
 
 			# ---------- Step 7: Send CONTROL COOPERATE and REQUEST_CONTROL ----------
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
 			for action in (CTRLACTION.COOPERATE, CTRLACTION.REQUEST_CONTROL):
-				cli_ctrl = TS_CONTROL_PDU(action=action, grantId=0, controlId=0)
+				cli_ctrl = TS_CONTROL_PDU()
+				cli_ctrl.action = action
+				cli_ctrl.grantId = 0
+				cli_ctrl.controlId = 0
 				await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
 
 			# ---------- Step 8: Send FONTLIST ----------
