@@ -785,7 +785,7 @@ class RDPConnection:
 							if res.errorInfoRaw == 0:  # ERRINFO_NONE indicates RDS mode
 								logger.info('🔍 RDS server detected via SET_ERROR_INFO_PDU with ERRINFO_NONE')
 								self.__rds_mode = True
-								
+								pass
 								# Wait for server response after CONFIRMACTIVEPDU for RDS
 								logger.debug('🔍 RDS mode: Waiting for server response after CONFIRMACTIVEPDU')
 								try:
@@ -797,8 +797,8 @@ class RDPConnection:
 									logger.debug('⏰ RDS server timeout after CONFIRMACTIVEPDU - proceeding anyway')
 								
 								logger.debug('📺 Starting RDS capability exchange sequence')
-								await self.__rds_video_activation()
-								return True, None
+								# await self.__rds_video_activation()
+								# return True, None
 							else:
 								# we got an actual error!
 								raise Exception('Server replied with error! Code: %s ErrName: %s' % (hex(res.errorInfoRaw), res.errorInfo.name))
@@ -806,32 +806,32 @@ class RDPConnection:
 						if 'Server replied with error!' in str(e):
 							raise e
 				
-				# If not RDS, show detailed error message
-				error_msg = f'Unexpected reply! Expected DEMANDACTIVEPDU got "{shc.pduType.name}" instead!'
-				error_msg += f'\n  PDU Type: {shc.pduType} (0x{shc.pduType.value:02x})'
-				error_msg += f'\n  PDU Source: {shc.pduSource}'
-				error_msg += f'\n  Total Length: {shc.totalLength}'
-				error_msg += f'\n  Data Start Offset: {data_start_offset}'
-				error_msg += f'\n  Raw Data Length: {len(data)} bytes'
-				error_msg += f'\n  Raw Data (first 32 bytes): {data[:32].hex()}'
+				# # If not RDS, show detailed error message
+				# error_msg = f'Unexpected reply! Expected DEMANDACTIVEPDU got "{shc.pduType.name}" instead!'
+				# error_msg += f'\n  PDU Type: {shc.pduType} (0x{shc.pduType.value:02x})'
+				# error_msg += f'\n  PDU Source: {shc.pduSource}'
+				# error_msg += f'\n  Total Length: {shc.totalLength}'
+				# error_msg += f'\n  Data Start Offset: {data_start_offset}'
+				# error_msg += f'\n  Raw Data Length: {len(data)} bytes'
+				# error_msg += f'\n  Raw Data (first 32 bytes): {data[:32].hex()}'
 				
-				if shc.pduType == PDUTYPE.DATAPDU:
-					try:
-						shd = TS_SHAREDATAHEADER.from_bytes(data)
-						error_msg += f'\n  DATAPDU Type2: {shd.pduType2.name} (0x{shd.pduType2.value:02x})'
-						error_msg += f'\n  Share ID: {shd.shareID}'
-						error_msg += f'\n  Stream ID: {shd.streamID}'
-					except Exception as e:
-						error_msg += f'\n  Failed to parse DATAPDU details: {e}'
+				# if shc.pduType == PDUTYPE.DATAPDU:
+				# 	try:
+				# 		shd = TS_SHAREDATAHEADER.from_bytes(data)
+				# 		error_msg += f'\n  DATAPDU Type2: {shd.pduType2.name} (0x{shd.pduType2.value:02x})'
+				# 		error_msg += f'\n  Share ID: {shd.shareID}'
+				# 		error_msg += f'\n  Stream ID: {shd.streamID}'
+				# 	except Exception as e:
+				# 		error_msg += f'\n  Failed to parse DATAPDU details: {e}'
 				
-				raise Exception(error_msg)
+				# raise Exception(error_msg)
 			
-			res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
-			for cap in res.capabilitySets:
-				if cap.capabilitySetType == CAPSTYPE.GENERAL:
-					cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
-					if EXTRAFLAG.ENC_SALTED_CHECKSUM in cap.extraFlags and self.cryptolayer is not None:
-						self.cryptolayer.use_encrypted_mac = True
+			# res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
+			# for cap in res.capabilitySets:
+			# 	if cap.capabilitySetType == CAPSTYPE.GENERAL:
+			# 		cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
+			# 		if EXTRAFLAG.ENC_SALTED_CHECKSUM in cap.extraFlags and self.cryptolayer is not None:
+			# 			self.cryptolayer.use_encrypted_mac = True
 			
 			caps = []
 			# now we send our capabilities
@@ -839,7 +839,7 @@ class RDPConnection:
 			cap.osMajorType = OSMAJORTYPE.WINDOWS
 			cap.osMinorType = OSMINORTYPE.WINDOWS_NT
 			cap.extraFlags =  EXTRAFLAG.FASTPATH_OUTPUT_SUPPORTED | EXTRAFLAG.NO_BITMAP_COMPRESSION_HDR | EXTRAFLAG.LONG_CREDENTIALS_SUPPORTED
-			if self.cryptolayer is not None and self.cryptolayer.use_encrypted_mac is True:
+			if self.cryptolayer is not None and self.cryptolayer.use_encrypted_mac is True and not self.__rds_mode:
 				cap.extraFlags |= EXTRAFLAG.ENC_SALTED_CHECKSUM
 			caps.append(cap)
 
@@ -899,7 +899,7 @@ class RDPConnection:
 				msg.capabilitySets.append(TS_CAPS_SET.from_capability(cap))
 			
 			sec_hdr = None
-			if self.cryptolayer is not None:
+			if self.cryptolayer is not None and not self.__rds_mode:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
@@ -938,8 +938,8 @@ class RDPConnection:
 					logger.debug('🔍 RDS server - no DATAPDU received after CONFIRMACTIVEPDU, proceeding with RDS capability exchange')
 					# For RDS mode, skip standard synchronization and go directly to RDS sequence
 					logger.debug('📺 Starting RDS capability exchange sequence')
-					await self.__rds_video_activation()
-					return True, None
+					# await self.__rds_video_activation()
+					# return True, None
 				else:
 					raise Exception('Unexpected reply! %s' % shc.pduType.name)
 
@@ -953,7 +953,7 @@ class RDPConnection:
 			cli_sync = TS_SYNCHRONIZE_PDU()
 			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
 			sec_hdr = None
-			if self.cryptolayer is not None:
+			if self.cryptolayer is not None and not self.__rds_mode:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
@@ -971,7 +971,7 @@ class RDPConnection:
 			cli_ctrl.controlId = 0
 
 			sec_hdr = None
-			if self.cryptolayer is not None:
+			if self.cryptolayer is not None and not self.__rds_mode:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
@@ -990,7 +990,7 @@ class RDPConnection:
 			cli_ctrl.controlId = 0
 
 			sec_hdr = None
-			if self.cryptolayer is not None:
+			if self.cryptolayer is not None and not self.__rds_mode:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
@@ -1005,7 +1005,7 @@ class RDPConnection:
 			cli_font = TS_FONT_LIST_PDU()
 			
 			sec_hdr = None
-			if self.cryptolayer is not None:
+			if self.cryptolayer is not None and not self.__rds_mode:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
