@@ -1012,46 +1012,8 @@ class RDPConnection:
 		try:
 			logger.debug('📺 === RDS VIDEO ACTIVATION SEQUENCE ===')
 			
-			# STEP 0: CLIENT_INFO_PDU for RDS session creation
-			logger.debug('📋 === STEP 0: CLIENT_INFO_PDU CONSTRUCTION (RDS) ===')
-			from aardwolf.protocol.T125.infopacket import TS_INFO_PACKET, INFO_FLAG
-			from aardwolf.protocol.T125.extendedinfopacket import TS_EXTENDED_INFO_PACKET, TS_TIME_ZONE_INFORMATION, CLI_AF
-			
-			info = TS_INFO_PACKET()
-			info.CodePage = 0
-			info.flags = INFO_FLAG.MOUSE | INFO_FLAG.DISABLECTRLALTDEL | INFO_FLAG.UNICODE | INFO_FLAG.MAXIMIZESHELL | INFO_FLAG.LOGONNOTIFY
-			info.Domain = ''
-			info.UserName = ''
-			info.Password = ''
-			if self.credentials.domain is not None:
-				info.Domain = self.credentials.domain
-			if self.credentials.username is not None:
-				info.UserName = self.credentials.username
-			if self.credentials.secret is not None:
-				info.Password = self.credentials.secret
-			info.cbDomain = len(info.Domain) * 2
-			info.cbUserName = len(info.UserName) * 2
-			info.cbPassword = len(info.Password) * 2
-			info.cbAlternateShell = 0
-			info.cbWorkingDir = 0
-			info.AlternateShell = ''
-			info.WorkingDir = ''
-			
-			info.extraInfo = TS_EXTENDED_INFO_PACKET()
-			info.extraInfo.clientAddressFamily = CLI_AF.INET
-			info.extraInfo.cbClientAddress = 0
-			info.extraInfo.clientAddress = ''
-			info.extraInfo.cbClientDir = 0
-			info.extraInfo.clientDir = ''
-			info.extraInfo.clientTimeZone = TS_TIME_ZONE_INFORMATION()
-			info.extraInfo.clientSessionId = 0
-			info.extraInfo.performanceFlags = 0
-			info.extraInfo.cbAutoReconnectLen = 0
-			
-			# Send CLIENT_INFO_PDU with no encryption for RDS
-			await self.handle_out_data(info, None, None, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ CLIENT_INFO_PDU sent successfully for RDS!')
-			await asyncio.sleep(0.1)
+			# Skip CLIENT_INFO_PDU for RDS - credentials already validated in earlier handshakes
+			logger.debug('📋 Skipping CLIENT_INFO_PDU for RDS - credentials already validated')
 			
 			# STEP 1: SYNCHRONIZE PDU
 			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
