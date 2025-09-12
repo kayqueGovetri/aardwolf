@@ -831,6 +831,19 @@ class RDPConnection:
 		try:
 			# waiting for server to demand active pdu and inside send its capabilities
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
+			logger.debug(f"📦 Recebido de MCS out_queue:")
+			logger.debug(f"  👉 type(data): {type(data)}")
+			logger.debug(f"  👉 len(data): {len(data) if data else 'None'}")
+			logger.debug(f"  👉 data (hex preview): {data[:64].hex() if data else 'None'}")
+			logger.debug(f"  👉 data (ascii preview): {''.join([chr(b) if 32 <= b <= 126 else '.' for b in data[:64]]) if data else 'None'}")
+
+			if err is not None:
+				logger.error(f"❌ err: {err}")
+				import traceback
+				logger.error("🔍 Traceback do err abaixo:")
+				logger.error(traceback.format_exc())
+			else:
+				logger.debug("✅ err: None")
 			if err is not None:
 				raise err
 
