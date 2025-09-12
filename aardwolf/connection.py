@@ -759,50 +759,35 @@ class RDPConnection:
 	
 	async def __handle_mandatory_capability_exchange(self):
 		try:
-			# waiting for server to demand active pdu and inside send its capabilities
+			SHARE_ID = 0x103EA
+			channel_id = self.__joined_channels['MCS'].channel_id
+
+			# ---------- 1. Receber primeiro PDU do servidor ----------
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
 			if err is not None:
 				raise err
 
 			data_start_offset = 0
 			if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
-				# encryptionLevel == 1 means that server data is not encrypted. This results in this part of the negotiation 
-				# that the server sends data to the client with an empty security header (which is not documented....)
-				data_start_offset = 4
+				data_start_offset = 4  # parte de negociação sem criptografia
 
 			data = data[data_start_offset:]
 			shc = TS_SHARECONTROLHEADER.from_bytes(data)
-			if shc.pduType != PDUTYPE.DEMANDACTIVEPDU:
-				error_msg = f'Unexpected reply! Expected DEMANDACTIVEPDU got "{shc.pduType.name}" instead!'
-				error_msg += f'\n  PDU Type: {shc.pduType} (0x{shc.pduType.value:02x})'
-				error_msg += f'\n  PDU Source: {shc.pduSource}'
-				error_msg += f'\n  Total Length: {shc.totalLength}'
-				error_msg += f'\n  Data Start Offset: {data_start_offset}'
-				error_msg += f'\n  Raw Data Length: {len(data)} bytes'
-				error_msg += f'\n  Raw Data (first 32 bytes): {data[:32].hex()}'
-				
-				if shc.pduType == PDUTYPE.DATAPDU:
-					try:
-						shd = TS_SHAREDATAHEADER.from_bytes(data)
-						error_msg += f'\n  DATAPDU Type2: {shd.pduType2.name} (0x{shd.pduType2.value:02x})'
-						error_msg += f'\n  Share ID: {shd.shareID}'
-						error_msg += f'\n  Stream ID: {shd.streamID}'
-					except Exception as e:
-						error_msg += f'\n  Failed to parse DATAPDU details: {e}'
-				
-				logger.debug(error_msg)
-			
-			# res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
-			# for cap in res.capabilitySets:
-			# 	if cap.capabilitySetType == CAPSTYPE.GENERAL:
-			# 		cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
-			# 		if EXTRAFLAG.ENC_SALTED_CHECKSUM in cap.extraFlags and self.cryptolayer is not None:
-			# 			self.cryptolayer.use_encrypted_mac = True
-			
-			SHARE_ID = 0x103EA
-			channel_id = self.__joined_channels['MCS'].channel_id
 
-			# ---------- 1. Preparar capabilities ----------
+			# RDS moderno: sempre vem DATAPDU com SET_ERROR_INFO_PDU antes de CONFIRM_ACTIVE
+			if shc.pduType == PDUTYPE.DATAPDU:
+				shd = TS_SHAREDATAHEADER.from_bytes(data)
+				if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
+					res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
+					if res.errorInfoRaw != 0:
+						raise Exception(f'Server replied with error! {res.errorInfo.name}')
+				else:
+					# Possível SYNCHRONIZE, mas geralmente é SET_ERROR_INFO
+					logger.debug(f'Unexpected DATAPDU: {shd.pduType2.name}, continuing handshake')
+			else:
+				raise Exception(f'Unexpected PDU: {shc.pduType.name}')
+
+			# ---------- 2. Preparar capability sets ----------
 			caps = []
 
 			# GENERAL
@@ -831,13 +816,10 @@ class RDPConnection:
 			cap.orderFlags |= ORDERFLAG.SOLIDPATTERNBRUSHONLY
 			caps.append(cap)
 
-			# BITMAPCACHE
+			# BITMAPCACHE, POINTER, INPUT
 			caps.append(TS_BITMAPCACHE_CAPABILITYSET())
-
-			# POINTER
 			caps.append(TS_POINTER_CAPABILITYSET())
 
-			# INPUT
 			cap = TS_INPUT_CAPABILITYSET()
 			cap.inputFlags = INPUT_FLAG.SCANCODES
 			cap.keyboardLayout = self.iosettings.keyboard_layout
@@ -859,7 +841,7 @@ class RDPConnection:
 			# SOUND
 			caps.append(TS_SOUND_CAPABILITYSET())
 
-			# ---------- 2. Enviar CONFIRM_ACTIVE ----------
+			# ---------- 3. Enviar CONFIRM_ACTIVE ----------
 			share_hdr = TS_SHARECONTROLHEADER()
 			share_hdr.pduType = PDUTYPE.CONFIRMACTIVEPDU
 			share_hdr.pduVersion = 1
@@ -879,7 +861,7 @@ class RDPConnection:
 
 			await self.handle_out_data(msg, sec_hdr, None, share_hdr, channel_id, False)
 
-			# ---------- 3. Receber resposta do servidor ----------
+			# ---------- 4. Receber resposta do servidor (SYNCHRONIZE esperado) ----------
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
 			if err:
 				raise err
@@ -887,19 +869,19 @@ class RDPConnection:
 			shc = TS_SHARECONTROLHEADER.from_bytes(data)
 			if shc.pduType == PDUTYPE.DATAPDU:
 				shd = TS_SHAREDATAHEADER.from_bytes(data)
-				if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
+				if shd.pduType2 == PDUTYPE2.SYNCHRONIZE:
+					res = TS_SYNCHRONIZE_PDU.from_bytes(data)
+				elif shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
+					# RDP pode enviar outro SET_ERROR_INFO antes do SYNCHRONIZE
 					res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
-					# se vier RDP Error Code NONE, podemos apenas seguir
 					if res.errorInfoRaw != 0:
 						raise Exception(f'Server replied with error! {res.errorInfo.name}')
-				elif shd.pduType2 == PDUTYPE2.SYNCHRONIZE:
-					res = TS_SYNCHRONIZE_PDU.from_bytes(data)
 				else:
 					raise Exception(f'Unexpected DATAPDU: {shd.pduType2.name}')
 			else:
 				raise Exception(f'Unexpected PDU: {shc.pduType.name}')
 
-			# ---------- 4. Enviar SYNCHRONIZE ----------
+			# ---------- 5. Enviar SYNCHRONIZE ----------
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = SHARE_ID
 			data_hdr.streamID = STREAM_TYPE.MED
@@ -907,10 +889,9 @@ class RDPConnection:
 
 			cli_sync = TS_SYNCHRONIZE_PDU()
 			cli_sync.targetUser = channel_id
-
 			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, channel_id, False)
 
-			# ---------- 5. Enviar CONTROL COOPERATE ----------
+			# ---------- 6. Enviar CONTROL COOPERATE ----------
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
 			cli_ctrl = TS_CONTROL_PDU()
 			cli_ctrl.action = CTRLACTION.COOPERATE
@@ -918,11 +899,11 @@ class RDPConnection:
 			cli_ctrl.controlId = 0
 			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
 
-			# ---------- 6. Enviar CONTROL REQUEST_CONTROL ----------
+			# ---------- 7. Enviar CONTROL REQUEST_CONTROL ----------
 			cli_ctrl.action = CTRLACTION.REQUEST_CONTROL
 			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
 
-			# ---------- 7. Enviar FONTLIST ----------
+			# ---------- 8. Enviar FONTLIST ----------
 			data_hdr.pduType2 = PDUTYPE2.FONTLIST
 			cli_font = TS_FONT_LIST_PDU()
 			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, channel_id, False)
@@ -931,6 +912,7 @@ class RDPConnection:
 
 		except Exception as e:
 			return None, e
+
 		
 	async def send_disconnect(self):
 		"""Sends a disconnect request to the server. This will NOT close the connection!"""
