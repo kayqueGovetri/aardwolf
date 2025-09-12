@@ -931,7 +931,7 @@ class RDPConnection:
 						self.__rds_mode = True
 						# RDS mode: Skip standard sequence and go directly to RDS activation
 						logger.debug('📺 Starting RDS video activation sequence immediately')
-						await self.__rds_video_activation()
+						# await self.__rds_video_activation()
 						return True, None
 					else:
 						# we got an actual error!
