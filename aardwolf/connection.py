@@ -911,14 +911,14 @@ class RDPConnection:
 			cli_sync = TS_SYNCHRONIZE_PDU()
 			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
 
-			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, channel_id, False)
+			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 
 			# ---------- 7. Enviar CONTROL COOPERATE e REQUEST_CONTROL ----------
 			logger.debug("Step 7: Sending CONTROL COOPERATE and REQUEST_CONTROL...")
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
 			for action in (CTRLACTION.COOPERATE, CTRLACTION.REQUEST_CONTROL):
 				cli_ctrl = TS_CONTROL_PDU(action=action, grantId=0, controlId=0)
-				await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
+				await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 
 			# ---------- 8. Enviar FONTLIST ----------
 			logger.debug("Step 8: Sending FONTLIST...")
