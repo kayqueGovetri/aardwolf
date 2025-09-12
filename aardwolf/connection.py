@@ -38,6 +38,7 @@ from aardwolf.protocol.pdu.capabilities.input import TS_INPUT_CAPABILITYSET, INP
 from aardwolf.protocol.pdu.capabilities.pointer import TS_POINTER_CAPABILITYSET
 from aardwolf.protocol.pdu.capabilities.bitmapcache import TS_BITMAPCACHE_CAPABILITYSET
 from aardwolf.protocol.pdu.capabilities.order import TS_ORDER_CAPABILITYSET, ORDERFLAG
+
 from aardwolf.protocol.T124.GCCPDU import GCCPDU
 from aardwolf.protocol.T124.userdata import TS_UD, TS_SC
 from aardwolf.protocol.T124.userdata.constants import TS_UD_TYPE, HIGH_COLOR_DEPTH, ENCRYPTION_FLAG, SUPPORTED_COLOR_DEPTH, \
@@ -105,9 +106,6 @@ class RDPConnection:
 
 		self.x224_connection_reply = None
 		self.x224_protocol = None
-		
-		# RDS support - minimal addition
-		self.__rds_mode = False
 
 		self.__server_connect_pdu:TS_SC = None # serverconnectpdu message from server (holds security exchange data)
 		
@@ -735,49 +733,6 @@ class RDPConnection:
 			sec_hdr.flagsHi = 0
 
 			await self.handle_out_data(info, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
-			
-			# SYNCHRONIZE
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.streamID = STREAM_TYPE.MED
-			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
-
-			cli_sync = TS_SYNCHRONIZE_PDU()
-			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
-
-			await self.handle_out_data(cli_sync, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-
-
-			# CONTROL - COOPERATE
-			data_hdr.pduType2 = PDUTYPE2.CONTROL
-			cli_ctrl = TS_CONTROL_PDU()
-			cli_ctrl.action = CTRLACTION.COOPERATE
-			cli_ctrl.grantId = 0
-			cli_ctrl.controlId = 0
-
-			await self.handle_out_data(cli_ctrl, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-
-
-			# CONTROL - REQUEST_CONTROL
-			cli_ctrl = TS_CONTROL_PDU()
-			cli_ctrl.action = CTRLACTION.REQUEST_CONTROL
-			cli_ctrl.grantId = 0
-			cli_ctrl.controlId = 0
-
-			await self.handle_out_data(cli_ctrl, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-
-
-			# FONT LIST (esse sim com encrypt)
-			data_hdr.pduType2 = PDUTYPE2.FONTLIST
-			cli_font = TS_FONT_LIST_PDU()
-
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
-
-			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-
 			return True, None
 		except Exception as e:
 			return None, e
@@ -806,19 +761,6 @@ class RDPConnection:
 		try:
 			# waiting for server to demand active pdu and inside send its capabilities
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
-			logger.debug(f"📦 Recebido de MCS out_queue:")
-			logger.debug(f"  👉 type(data): {type(data)}")
-			logger.debug(f"  👉 len(data): {len(data) if data else 'None'}")
-			logger.debug(f"  👉 data (hex preview): {data[:64].hex() if data else 'None'}")
-			logger.debug(f"  👉 data (ascii preview): {''.join([chr(b) if 32 <= b <= 126 else '.' for b in data[:64]]) if data else 'None'}")
-
-			if err is not None:
-				logger.error(f"❌ err: {err}")
-				import traceback
-				logger.error("🔍 Traceback do err abaixo:")
-				logger.error(traceback.format_exc())
-			else:
-				logger.debug("✅ err: None")
 			if err is not None:
 				raise err
 
@@ -830,96 +772,72 @@ class RDPConnection:
 
 			data = data[data_start_offset:]
 			shc = TS_SHARECONTROLHEADER.from_bytes(data)
-			
-			logger.debug("✅ TS_SHARECONTROLHEADER interpretado com sucesso:")
-			logger.debug(f"    • pduType: {shc.pduType}")
-			logger.debug(f"    • pduVersion: {shc.pduVersion}")
-			logger.debug(f"    • pduSource: {shc.pduSource}")
-			logger.debug(f"    • totalLength: {shc.totalLength}")
 			if shc.pduType != PDUTYPE.DEMANDACTIVEPDU:
-				# Check for RDS mode detection before throwing error
+				error_msg = f'Unexpected reply! Expected DEMANDACTIVEPDU got "{shc.pduType.name}" instead!'
+				error_msg += f'\n  PDU Type: {shc.pduType} (0x{shc.pduType.value:02x})'
+				error_msg += f'\n  PDU Source: {shc.pduSource}'
+				error_msg += f'\n  Total Length: {shc.totalLength}'
+				error_msg += f'\n  Data Start Offset: {data_start_offset}'
+				error_msg += f'\n  Raw Data Length: {len(data)} bytes'
+				error_msg += f'\n  Raw Data (first 32 bytes): {data[:32].hex()}'
+				
 				if shc.pduType == PDUTYPE.DATAPDU:
 					try:
 						shd = TS_SHAREDATAHEADER.from_bytes(data)
-						if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
-							res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
-							if res.errorInfoRaw == 0:  # ERRINFO_NONE indicates RDS mode
-								logger.info('🔍 RDS server detected via SET_ERROR_INFO_PDU with ERRINFO_NONE')
-								# self.__rds_mode = True
-								# pass
-								logger.debug('📺 Starting RDS capability exchange sequence')
-								#await self.__rds_video_activation()
-								# return True, None
-							else:
-								# we got an actual error!
-								raise Exception('Server replied with error! Code: %s ErrName: %s' % (hex(res.errorInfoRaw), res.errorInfo.name))
+						error_msg += f'\n  DATAPDU Type2: {shd.pduType2.name} (0x{shd.pduType2.value:02x})'
+						error_msg += f'\n  Share ID: {shd.shareID}'
+						error_msg += f'\n  Stream ID: {shd.streamID}'
 					except Exception as e:
-						if 'Server replied with error!' in str(e):
-							raise e
+						error_msg += f'\n  Failed to parse DATAPDU details: {e}'
 				
-				# # If not RDS, show detailed error message
-				# error_msg = f'Unexpected reply! Expected DEMANDACTIVEPDU got "{shc.pduType.name}" instead!'
-				# error_msg += f'\n  PDU Type: {shc.pduType} (0x{shc.pduType.value:02x})'
-				# error_msg += f'\n  PDU Source: {shc.pduSource}'
-				# error_msg += f'\n  Total Length: {shc.totalLength}'
-				# error_msg += f'\n  Data Start Offset: {data_start_offset}'
-				# error_msg += f'\n  Raw Data Length: {len(data)} bytes'
-				# error_msg += f'\n  Raw Data (first 32 bytes): {data[:32].hex()}'
-				
-				# if shc.pduType == PDUTYPE.DATAPDU:
-				# 	try:
-				# 		shd = TS_SHAREDATAHEADER.from_bytes(data)
-				# 		error_msg += f'\n  DATAPDU Type2: {shd.pduType2.name} (0x{shd.pduType2.value:02x})'
-				# 		error_msg += f'\n  Share ID: {shd.shareID}'
-				# 		error_msg += f'\n  Stream ID: {shd.streamID}'
-				# 	except Exception as e:
-				# 		error_msg += f'\n  Failed to parse DATAPDU details: {e}'
-				
-				# raise Exception(error_msg)
+				logger.debug(error_msg)
 			
-			# Parse PDU based on mode - RDS sends DATAPDU with error none, standard RDP sends DEMAND_ACTIVE_PDU
-			if not self.__rds_mode:
-				# Standard RDP: Parse DEMAND_ACTIVE_PDU
-				res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
-				for cap in res.capabilitySets:
-					if cap.capabilitySetType == CAPSTYPE.GENERAL:
-						cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
-						if EXTRAFLAG.ENC_SALTED_CHECKSUM in cap.extraFlags and self.cryptolayer is not None:
-							self.cryptolayer.use_encrypted_mac = True
-			else:
-				# RDS mode: data contains DATAPDU with SET_ERROR_INFO_PDU (error none) - already processed above
-				logger.debug('🔍 RDS mode: Skipping DEMAND_ACTIVE_PDU parsing, using DATAPDU with error none')
+			# res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
+			# for cap in res.capabilitySets:
+			# 	if cap.capabilitySetType == CAPSTYPE.GENERAL:
+			# 		cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
+			# 		if EXTRAFLAG.ENC_SALTED_CHECKSUM in cap.extraFlags and self.cryptolayer is not None:
+			# 			self.cryptolayer.use_encrypted_mac = True
 			
+			SHARE_ID = 0x103EA
+			channel_id = self.__joined_channels['MCS'].channel_id
+
+			# ---------- 1. Preparar capabilities ----------
 			caps = []
-			# now we send our capabilities
+
+			# GENERAL
 			cap = TS_GENERAL_CAPABILITYSET()
 			cap.osMajorType = OSMAJORTYPE.WINDOWS
 			cap.osMinorType = OSMINORTYPE.WINDOWS_NT
-			cap.extraFlags =  EXTRAFLAG.FASTPATH_OUTPUT_SUPPORTED | EXTRAFLAG.NO_BITMAP_COMPRESSION_HDR | EXTRAFLAG.LONG_CREDENTIALS_SUPPORTED
-			if self.cryptolayer is not None and self.cryptolayer.use_encrypted_mac is True and not self.__rds_mode:
+			cap.extraFlags = (
+				EXTRAFLAG.FASTPATH_OUTPUT_SUPPORTED |
+				EXTRAFLAG.NO_BITMAP_COMPRESSION_HDR |
+				EXTRAFLAG.LONG_CREDENTIALS_SUPPORTED
+			)
+			if self.cryptolayer and getattr(self.cryptolayer, 'use_encrypted_mac', False):
 				cap.extraFlags |= EXTRAFLAG.ENC_SALTED_CHECKSUM
 			caps.append(cap)
 
+			# BITMAP
 			cap = TS_BITMAP_CAPABILITYSET()
 			cap.preferredBitsPerPixel = self.iosettings.video_bpp_max
 			cap.desktopWidth = self.iosettings.video_width
 			cap.desktopHeight = self.iosettings.video_height
 			caps.append(cap)
 
-			#TS_FONT_CAPABILITYSET missing
-
+			# ORDER
 			cap = TS_ORDER_CAPABILITYSET()
-			cap.orderFlags = ORDERFLAG.ZEROBOUNDSDELTASSUPPORT | ORDERFLAG.NEGOTIATEORDERSUPPORT #do not change this!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-			#TEST
+			cap.orderFlags = ORDERFLAG.ZEROBOUNDSDELTASSUPPORT | ORDERFLAG.NEGOTIATEORDERSUPPORT
 			cap.orderFlags |= ORDERFLAG.SOLIDPATTERNBRUSHONLY
 			caps.append(cap)
 
-			cap = TS_BITMAPCACHE_CAPABILITYSET()
-			caps.append(cap)
+			# BITMAPCACHE
+			caps.append(TS_BITMAPCACHE_CAPABILITYSET())
 
-			cap = TS_POINTER_CAPABILITYSET()
-			caps.append(cap)
+			# POINTER
+			caps.append(TS_POINTER_CAPABILITYSET())
 
+			# INPUT
 			cap = TS_INPUT_CAPABILITYSET()
 			cap.inputFlags = INPUT_FLAG.SCANCODES
 			cap.keyboardLayout = self.iosettings.keyboard_layout
@@ -928,315 +846,91 @@ class RDPConnection:
 			cap.keyboardFunctionKey = self.iosettings.keyboard_functionkey
 			caps.append(cap)
 
-			cap = TS_BRUSH_CAPABILITYSET()
-			caps.append(cap)
+			# BRUSH, GLYPHCACHE, OFFSCREEN
+			caps.append(TS_BRUSH_CAPABILITYSET())
+			caps.append(TS_GLYPHCACHE_CAPABILITYSET())
+			caps.append(TS_OFFSCREEN_CAPABILITYSET())
 
-			cap = TS_GLYPHCACHE_CAPABILITYSET()
-			caps.append(cap)
-
-			cap = TS_OFFSCREEN_CAPABILITYSET()
-			caps.append(cap)
-
+			# VIRTUALCHANNEL
 			cap = TS_VIRTUALCHANNEL_CAPABILITYSET()
 			cap.flags = VCCAPS.COMPR_CS_8K | VCCAPS.COMPR_SC
 			caps.append(cap)
 
-			cap = TS_SOUND_CAPABILITYSET()
-			caps.append(cap)
+			# SOUND
+			caps.append(TS_SOUND_CAPABILITYSET())
 
+			# ---------- 2. Enviar CONFIRM_ACTIVE ----------
 			share_hdr = TS_SHARECONTROLHEADER()
 			share_hdr.pduType = PDUTYPE.CONFIRMACTIVEPDU
 			share_hdr.pduVersion = 1
-			share_hdr.pduSource = self.__joined_channels['MCS'].channel_id
+			share_hdr.pduSource = channel_id
 
 			msg = TS_CONFIRM_ACTIVE_PDU()
-			msg.shareID = 0x103EA
+			msg.shareID = SHARE_ID
 			msg.originatorID = 1002
-			for cap in caps:
-				msg.capabilitySets.append(TS_CAPS_SET.from_capability(cap))
-			
+			for c in caps:
+				msg.capabilitySets.append(TS_CAPS_SET.from_capability(c))
+
 			sec_hdr = None
-			if self.cryptolayer is not None and not self.__rds_mode:
+			if self.cryptolayer:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
 
-			await self.handle_out_data(msg, sec_hdr, None, share_hdr, self.__joined_channels['MCS'].channel_id, False)
-			
+			await self.handle_out_data(msg, sec_hdr, None, share_hdr, channel_id, False)
+
+			# ---------- 3. Receber resposta do servidor ----------
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
-			if err is not None:
+			if err:
 				raise err
-			
-			data = data[data_start_offset:]
+
 			shc = TS_SHARECONTROLHEADER.from_bytes(data)
 			if shc.pduType == PDUTYPE.DATAPDU:
 				shd = TS_SHAREDATAHEADER.from_bytes(data)
 				if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
-					# Check for RDS mode detection first
 					res = TS_SET_ERROR_INFO_PDU.from_bytes(data)
-					if res.errorInfoRaw == 0:  # ERRINFO_NONE indicates RDS mode
-						logger.info('🔍 RDS server detected via SET_ERROR_INFO_PDU with ERRINFO_NONE')
-						self.__rds_mode = True
-						# RDS mode: Skip standard sequence and go directly to RDS activation
-						logger.debug('📺 Starting RDS video activation sequence immediately')
-						# await self.__rds_video_activation()
-						return True, None
-					else:
-						# we got an actual error!
-						raise Exception('Server replied with error! Code: %s ErrName: %s' % (hex(res.errorInfoRaw), res.errorInfo.name))
-
+					# se vier RDP Error Code NONE, podemos apenas seguir
+					if res.errorInfoRaw != 0:
+						raise Exception(f'Server replied with error! {res.errorInfo.name}')
 				elif shd.pduType2 == PDUTYPE2.SYNCHRONIZE:
-					# this is the expected data here
 					res = TS_SYNCHRONIZE_PDU.from_bytes(data)
-			
 				else:
-					raise Exception('Unexpected reply! %s' % shd.pduType2.name)
+					raise Exception(f'Unexpected DATAPDU: {shd.pduType2.name}')
 			else:
-				raise Exception('Unexpected reply! %s' % shc.pduType.name)
+				raise Exception(f'Unexpected PDU: {shc.pduType.name}')
 
-			# RDS mode is now handled earlier in the method before DEMANDACTIVEPDU validation
-
+			# ---------- 4. Enviar SYNCHRONIZE ----------
 			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
+			data_hdr.shareID = SHARE_ID
 			data_hdr.streamID = STREAM_TYPE.MED
 			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
 
 			cli_sync = TS_SYNCHRONIZE_PDU()
-			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
-			
-			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			cli_sync.targetUser = channel_id
 
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, channel_id, False)
+
+			# ---------- 5. Enviar CONTROL COOPERATE ----------
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
-
 			cli_ctrl = TS_CONTROL_PDU()
 			cli_ctrl.action = CTRLACTION.COOPERATE
 			cli_ctrl.grantId = 0
 			cli_ctrl.controlId = 0
+			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
 
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
-
-			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			
-
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
-			data_hdr.pduType2 = PDUTYPE2.CONTROL
-
-			cli_ctrl = TS_CONTROL_PDU()
+			# ---------- 6. Enviar CONTROL REQUEST_CONTROL ----------
 			cli_ctrl.action = CTRLACTION.REQUEST_CONTROL
-			cli_ctrl.grantId = 0
-			cli_ctrl.controlId = 0
+			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, channel_id, False)
 
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
-
-			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			# ---------- 7. Enviar FONTLIST ----------
 			data_hdr.pduType2 = PDUTYPE2.FONTLIST
-
 			cli_font = TS_FONT_LIST_PDU()
-			
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
+			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, channel_id, False)
 
-			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			
-			# RDS-specific video activation sequence (minimal addition)
-			# Note: This is now handled earlier in the method for RDS mode
-			
 			return True, None
+
 		except Exception as e:
 			return None, e
-	
-	async def __rds_video_activation(self):
-		"""RDS-specific video activation sequence - separate method to avoid modifying core logic"""
-		try:
-			logger.debug('📺 === RDS VIDEO ACTIVATION SEQUENCE ===')
-			
-			# # STEP 0: CLIENT_INFO_PDU (CRITICAL for RDS session creation)
-			# logger.debug('🔐 STEP 0: Sending CLIENT_INFO_PDU for RDS session creation')
-			# from aardwolf.protocol.T128.clientinfopdu import TS_INFO_PACKET, INFO_FLAG
-			
-			# client_info = TS_INFO_PACKET()
-			# client_info.flags = INFO_FLAG.LOGONNOTIFY | INFO_FLAG.UNICODE | INFO_FLAG.ENABLEWINDOWSKEY
-			# if self.credentials:
-			# 	client_info.domain = self.credentials.domain or ''
-			# 	client_info.userName = self.credentials.username or ''
-			# 	client_info.password = self.credentials.secret or ''
-			# client_info.clientAddress = '127.0.0.1'
-			# client_info.clientDir = 'C:\\'
-			
-			# # Send CLIENT_INFO_PDU without encryption for RDS
-			# await self.handle_out_data(client_info, None, None, None, self.__joined_channels['MCS'].channel_id, False)
-			# logger.debug('✅ STEP 0: CLIENT_INFO_PDU sent for RDS session creation')
-			
-			# # Small delay for server session processing
-			# await asyncio.sleep(0.1)
-			
-			# STEP 1: SYNCHRONIZE PDU
-			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.LOW
-			data_hdr.compressedType = 0
-			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
-			
-			sync_pdu = TS_SYNCHRONIZE_PDU()
-			sync_pdu.targetUser = self.__joined_channels['MCS'].channel_id
-			
-			await self.handle_out_data(sync_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ STEP 1: SYNCHRONIZE PDU sent for RDS')
-			
-			# STEP 2: COOPERATE Control
-			from aardwolf.protocol.T128.controlpdu import TS_CONTROL_PDU, CTRLACTION
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.LOW
-			data_hdr.compressedType = 0
-			data_hdr.pduType2 = PDUTYPE2.CONTROL
-			
-			cooperate_pdu = TS_CONTROL_PDU()
-			cooperate_pdu.action = CTRLACTION.COOPERATE
-			cooperate_pdu.grantId = 0
-			cooperate_pdu.controlId = 0
-			
-			await self.handle_out_data(cooperate_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ STEP 2: COOPERATE Control sent for RDS')
-			
-			# STEP 3: REQUEST_CONTROL
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.LOW
-			data_hdr.compressedType = 0
-			data_hdr.pduType2 = PDUTYPE2.CONTROL
-			
-			request_control_pdu = TS_CONTROL_PDU()
-			request_control_pdu.action = CTRLACTION.REQUEST_CONTROL
-			request_control_pdu.grantId = 0
-			request_control_pdu.controlId = 0
-			
-			await self.handle_out_data(request_control_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ STEP 3: REQUEST_CONTROL sent for RDS')
-			
-			# STEP 4: FONTLIST PDU
-			from aardwolf.protocol.T128.fontlistpdu import TS_FONT_LIST_PDU
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.LOW
-			data_hdr.compressedType = 0
-			data_hdr.pduType2 = PDUTYPE2.FONTLIST
-			
-			fontlist_pdu = TS_FONT_LIST_PDU()
-			fontlist_pdu.numberFonts = 0
-			fontlist_pdu.totalNumFonts = 0
-			fontlist_pdu.listFlags = 0x0003  # FONTLIST_FIRST | FONTLIST_LAST
-			fontlist_pdu.entrySize = 0x0032
-			
-			await self.handle_out_data(fontlist_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ STEP 4: FONTLIST PDU sent for RDS')
-			
-			# STEP 5: REFRESH_RECT_PDU - Create simple PDU structure
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.LOW
-			data_hdr.compressedType = 0
-			data_hdr.pduType2 = PDUTYPE2.REFRESH_RECT
-			
-			# Create simple refresh rect PDU manually since module doesn't exist
-			refresh_rect_data = b'\x01\x00\x00\x00'  # numberOfAreas = 1
-			refresh_rect_data += b'\x00\x00\x00\x00'  # left = 0
-			refresh_rect_data += b'\x00\x00\x00\x00'  # top = 0
-			refresh_rect_data += (self.iosettings.video_width).to_bytes(2, 'little') + b'\x00\x00'  # right
-			refresh_rect_data += (self.iosettings.video_height).to_bytes(2, 'little') + b'\x00\x00'  # bottom
-			
-			await self.handle_out_data(refresh_rect_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ STEP 5: REFRESH_RECT_PDU sent for RDS')
-			
-			# STEP 6: SUPPRESS_OUTPUT_PDU - Create manually
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.LOW
-			data_hdr.compressedType = 0
-			data_hdr.pduType2 = PDUTYPE2.SUPPRESS_OUTPUT
-			
-			# Create suppress output PDU manually - allowDisplayUpdates = 1
-			suppress_output_data = b'\x01'  # allowDisplayUpdates = 1
-			
-			await self.handle_out_data(suppress_output_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ STEP 6: SUPPRESS_OUTPUT_PDU sent for RDS')
-			
-			# STEP 7: PERSISTENT_KEY_LIST_PDU - Create manually
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.LOW
-			data_hdr.compressedType = 0
-			data_hdr.pduType2 = PDUTYPE2.BITMAPCACHE_PERSISTENT_LIST
-			
-			# Create empty persistent key list PDU manually
-			persistent_keys_data = b'\x00\x00\x00\x00\x00\x00'  # Empty cache entries
-			
-			await self.handle_out_data(persistent_keys_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ STEP 7: PERSISTENT_KEY_LIST_PDU sent for RDS')
-			
-			# Additional refresh requests for session attachment (based on memory findings)
-			logger.debug('🔄 Sending additional REFRESH_RECT_PDU requests for session attachment')
-			for i in range(3):
-				await asyncio.sleep(0.5)  # Small delay between requests
-				
-				data_hdr = TS_SHAREDATAHEADER()
-				data_hdr.shareID = 0x103EA
-				data_hdr.streamID = STREAM_TYPE.LOW
-				data_hdr.compressedType = 0
-				data_hdr.pduType2 = PDUTYPE2.REFRESH_RECT
-				
-				# Create refresh rect PDU manually - full screen refresh
-				refresh_rect_data = b'\x01\x00\x00\x00'  # numberOfAreas = 1
-				refresh_rect_data += b'\x00\x00\x00\x00'  # left = 0
-				refresh_rect_data += b'\x00\x00\x00\x00'  # top = 0
-				refresh_rect_data += (self.iosettings.video_width).to_bytes(2, 'little') + b'\x00\x00'  # right
-				refresh_rect_data += (self.iosettings.video_height).to_bytes(2, 'little') + b'\x00\x00'  # bottom
-				
-				await self.handle_out_data(refresh_rect_data, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-				logger.debug(f'✅ Additional REFRESH_RECT_PDU #{i+1} sent for session attachment')
-			
-			# STEP 8: Wait for Font Map PDU (Critical for input activation)
-			logger.debug('⏳ STEP 8: Waiting for Font Map PDU from server')
-			try:
-				data, err = await asyncio.wait_for(self.__joined_channels['MCS'].out_queue.get(), timeout=5.0)
-				if err is not None:
-					logger.warning(f'Font Map PDU wait error: {err}')
-				else:
-					logger.debug('✅ STEP 8: Font Map PDU received - input now enabled')
-			except asyncio.TimeoutError:
-				logger.warning('⚠️ Font Map PDU timeout - proceeding anyway (input may not work)')
-			
-			logger.debug('🎯 RDS video activation sequence completed with enhanced refresh!')
-			
-		except Exception as e:
-			logger.error(f'RDS video activation failed: {e}')
-			raise e
 		
 	async def send_disconnect(self):
 		"""Sends a disconnect request to the server. This will NOT close the connection!"""
@@ -1608,11 +1302,7 @@ class RDPConnection:
 		try:
 			if is_fastpath is False:
 				#print('Sending data on channel "%s(%s)"' % (self.name, self.channel_id))
-				# Handle both objects with to_bytes() method and raw bytes
-				if isinstance(dataobj, bytes):
-					data = dataobj
-				else:
-					data = dataobj.to_bytes()
+				data = dataobj.to_bytes()
 				hdrs = b''
 				if sharecontrol_hdr is not None:
 					sharecontrol_hdr.pduSource = channel_id
