@@ -858,7 +858,7 @@ class RDPConnection:
 			caps.append(TS_BRUSH_CAPABILITYSET())
 			caps.append(TS_GLYPHCACHE_CAPABILITYSET())
 			caps.append(TS_OFFSCREEN_CAPABILITYSET())
-			caps.append(TS_VIRTUALCHANNEL_CAPABILITYSET(flags=VCCAPS.COMPR_CS_8K | VCCAPS.COMPR_SC))
+			caps.append(TS_VIRTUALCHANNEL_CAPABILITYSET())
 			caps.append(TS_SOUND_CAPABILITYSET())
 			logger.debug("Step 3: Added remaining capabilities")
 
@@ -903,8 +903,14 @@ class RDPConnection:
 
 			# ---------- 6. Enviar SYNCHRONIZE ----------
 			logger.debug("Step 6: Sending SYNCHRONIZE...")
-			data_hdr = TS_SHAREDATAHEADER(shareID=SHARE_ID, streamID=STREAM_TYPE.MED, pduType2=PDUTYPE2.SYNCHRONIZE)
-			cli_sync = TS_SYNCHRONIZE_PDU(targetUser=channel_id)
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = SHARE_ID
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
+			
+			cli_sync = TS_SYNCHRONIZE_PDU()
+			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
+
 			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, channel_id, False)
 
 			# ---------- 7. Enviar CONTROL COOPERATE e REQUEST_CONTROL ----------
