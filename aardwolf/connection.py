@@ -1024,48 +1024,8 @@ class RDPConnection:
 		try:
 			logger.debug('📺 === RDS VIDEO ACTIVATION SEQUENCE ===')
 			
-			# STEP 0: CLIENT_INFO_PDU - Critical for RDS session creation
-			logger.debug('📋 STEP 0: Sending CLIENT_INFO_PDU for RDS session creation')
-			from aardwolf.protocol.T128.clientinfopdu import TS_INFO_PACKET, TS_EXTENDED_INFO_PACKET, INFO_TYPE, PERF
-			
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.LOW
-			data_hdr.compressedType = 0
-			data_hdr.pduType2 = PDUTYPE2.CLIENT_INFO_PDU
-			
-			info_pdu = TS_INFO_PACKET()
-			info_pdu.CodePage = 0
-			info_pdu.flags = INFO_TYPE.LOGONNOTIFY | INFO_TYPE.UNICODE
-			info_pdu.cbDomain = len(self.credentials.domain) * 2 if self.credentials.domain else 0
-			info_pdu.cbUserName = len(self.credentials.username) * 2 if self.credentials.username else 0
-			info_pdu.cbPassword = len(self.credentials.secret) * 2 if self.credentials.secret else 0
-			info_pdu.cbAlternateShell = 0
-			info_pdu.cbWorkingDir = 0
-			info_pdu.Domain = self.credentials.domain if self.credentials.domain else ''
-			info_pdu.UserName = self.credentials.username if self.credentials.username else ''
-			info_pdu.Password = self.credentials.secret if self.credentials.secret else ''
-			info_pdu.AlternateShell = ''
-			info_pdu.WorkingDir = ''
-			
-			# Extended info for RDS
-			ext_info = TS_EXTENDED_INFO_PACKET()
-			ext_info.clientAddressFamily = 2  # AF_INET
-			ext_info.cbClientAddress = 30
-			ext_info.clientAddress = '127.0.0.1'
-			ext_info.cbClientDir = 64
-			ext_info.clientDir = 'C:\\Windows\\System32\\mstscax.dll'
-			ext_info.clientTimeZone.Bias = 0
-			ext_info.clientSessionId = 0
-			ext_info.performanceFlags = PERF.DISABLE_WALLPAPER | PERF.DISABLE_FULLWINDOWDRAG | PERF.DISABLE_MENUANIMATIONS
-			
-			info_pdu.extraInfo = ext_info
-			
-			await self.handle_out_data(info_pdu, None, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			logger.debug('✅ STEP 0: CLIENT_INFO_PDU sent for RDS session creation')
-			
-			# Small delay for server session processing
-			await asyncio.sleep(0.1)
+			# RDS servers don't require CLIENT_INFO_PDU - credentials already validated in earlier handshake
+			# Starting directly with standard RDS capability exchange sequence
 			
 			# STEP 1: SYNCHRONIZE PDU
 			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
