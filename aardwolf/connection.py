@@ -711,7 +711,7 @@ class RDPConnection:
 			systime = TS_SYSTEMTIME()
 			systime.wYear = now.year
 			systime.wMonth = now.month
-			systime.wDayOfWeek = now.weekday()
+			systime.wDayOfWeek = (now.weekday() + 1) % 7  # domingo=0
 			systime.wDay = now.day
 			systime.wHour = now.hour
 			systime.wMinute = now.minute
@@ -719,36 +719,26 @@ class RDPConnection:
 			systime.wMilliseconds = int(now.microsecond / 1000)
 
 			# ----- TIMEZONE dinâmico -----
-			offset_min = -int(datetime.now(timezone.utc).astimezone().utcoffset().total_seconds() / 60)
-			dst_offset = -int(datetime.now().astimezone().dst().total_seconds() / 60) if datetime.now().astimezone().dst() else 0
+			offset_min = int(-datetime.now().astimezone().utcoffset().total_seconds() / 60)
+			dst_offset = int(-datetime.now().astimezone().dst().total_seconds() / 60) if datetime.now().astimezone().dst() else 0
 
 			systz = TS_TIME_ZONE_INFORMATION()
-			systz.Bias = offset_min
+			systz.Bias = offset_min & 0xFFFFFFFF
 			systz.StandardName = b'GMT Standard Time'
 			systz.StandardDate = systime
 			systz.StandardBias = 0
 			systz.DaylightName = b'GMT Daylight Time'
 			systz.DaylightDate = systime
-			systz.DaylightBias = dst_offset
+			systz.DaylightBias = dst_offset & 0xFFFFFFFF
 
 			# ----- EXTENDED INFO -----
 			extinfo = TS_EXTENDED_INFO_PACKET()
 			extinfo.clientAddressFamily = CLI_AF.AF_INET
 
 			# IP dinâmico: primeira interface que não seja loopback
-			try:
-				all_ips = socket.gethostbyname_ex(socket.gethostname())[2]
-				extinfo.clientAddress = next((ip for ip in all_ips if not ip.startswith("127.")), '127.0.0.1')
-			except Exception:
-				extinfo.clientAddress = '127.0.0.1'
+			extinfo.clientAddress = '10.10.10.101'
 
-			# Diretório do cliente
-			if os.name == 'nt':
-				system_root = os.environ.get('SYSTEMROOT', 'C:\\Windows')
-				mstsc_path = os.path.join(system_root, 'System32', 'mstscax.dll')
-				extinfo.clientDir = mstsc_path if os.path.exists(mstsc_path) else system_root
-			else:
-				extinfo.clientDir = '/usr/bin/fake-mstscax.dll'  # apenas placeholder
+			extinfo.clientDir = 'C:\\Windows\\System32\\mstscax.dll'
 
 			extinfo.clientTimeZone = systz
 			extinfo.clientSessionId = 0
