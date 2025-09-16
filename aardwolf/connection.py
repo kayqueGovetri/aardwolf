@@ -9,6 +9,7 @@ from typing import cast
 from collections import OrderedDict
 import socket
 import os
+import base64
 from datetime import datetime, timezone
 import asn1tools
 from PIL import Image
