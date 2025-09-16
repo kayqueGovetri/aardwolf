@@ -256,7 +256,10 @@ class RDPConnection:
 				else:
 					self.client_x224_flags = 0
 					self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
-
+			
+			self.x224_protocol = SUPP_PROTOCOLS.RDP  # 0x08
+			self.x224_flag = 0                        # ou None, já que não há flag extra para Standard RDP
+			logger.debug("Forcing Standard RDP protocol (0x08)")
 			logger.debug("Client protocol flags: %s", self.client_x224_flags)
 			logger.debug("Client protocol offer: %s", self.client_x224_supported_protocols)
 
@@ -297,6 +300,7 @@ class RDPConnection:
 				self.x224_flag = None
 				logger.debug("Old RDP protocol selected")
 
+			
 			# Compilar codecs ASN.1 para canais e MCS
 			self.__t125_ber_codec = asn1tools.compile_string(MCSPDU_ver_2, "ber")
 			self._t125_per_codec = asn1tools.compile_string(MCSPDU_ver_2, "per")
