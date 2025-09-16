@@ -735,17 +735,20 @@ class RDPConnection:
 			extinfo = TS_EXTENDED_INFO_PACKET()
 			extinfo.clientAddressFamily = CLI_AF.AF_INET
 
-			# IP dinâmico da interface principal
+			# IP dinâmico: primeira interface que não seja loopback
 			try:
-				extinfo.clientAddress = socket.gethostbyname(socket.gethostname())
+				all_ips = socket.gethostbyname_ex(socket.gethostname())[2]
+				extinfo.clientAddress = next((ip for ip in all_ips if not ip.startswith("127.")), '127.0.0.1')
 			except Exception:
 				extinfo.clientAddress = '127.0.0.1'
 
 			# Diretório do cliente
 			if os.name == 'nt':
-				extinfo.clientDir = os.path.join(os.environ.get('SYSTEMROOT', 'C:\\Windows'), 'System32', 'mstscax.dll')
+				system_root = os.environ.get('SYSTEMROOT', 'C:\\Windows')
+				mstsc_path = os.path.join(system_root, 'System32', 'mstscax.dll')
+				extinfo.clientDir = mstsc_path if os.path.exists(mstsc_path) else system_root
 			else:
-				extinfo.clientDir = '/usr/bin/fake-mstscax.dll'
+				extinfo.clientDir = '/usr/bin/fake-mstscax.dll'  # apenas placeholder
 
 			extinfo.clientTimeZone = systz
 			extinfo.clientSessionId = 0
@@ -770,6 +773,14 @@ class RDPConnection:
 				sec_hdr.flags |= SEC_HDR_FLAG.ENCRYPT
 			sec_hdr.flagsHi = 0
 
+			# ----- LOG detalhado -----
+			logger.debug("===== USERDATA =====")
+			logger.debug("Client IP: %s", extinfo.clientAddress)
+			logger.debug("Client Dir: %s", extinfo.clientDir)
+			logger.debug("TimeZone Bias: %d, DST Bias: %d", systz.Bias, systz.DaylightBias)
+			logger.debug("INFO Packet: Domain=%s, User=%s, Flags=%s", info.Domain, info.UserName, info.flags)
+			logger.debug("===================")
+
 			# ----- SEND -----
 			await self.handle_out_data(
 				info,
@@ -781,7 +792,9 @@ class RDPConnection:
 			)
 
 			return True, None
+
 		except Exception as e:
+			logger.error("Error in __send_userdata: %s\n%s", e, traceback.format_exc())
 			return None, e
 
 
