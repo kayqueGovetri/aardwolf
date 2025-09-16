@@ -786,21 +786,32 @@ class RDPConnection:
 
 	async def __handle_license(self):
 		"""
-		Handles the RDP license exchange. Currently simplified to process tokenInhibitConfirm.
-		
-		Returns:
-			Tuple[bool, Exception]: True if license handling was successful, else None and the exception.
+		Handles RDP license exchange with detailed logging of incoming MCS PDUs.
 		"""
 		try:
-			# Wait for license-related data from MCS channel
+			# Pegando apenas um PDU da fila, sem loop infinito
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
 			if err:
 				raise err
 
-			# Decode the DomainMCSPDU
-			res = self._t125_per_codec.decode('DomainMCSPDU', data)
-			logger.debug("Decoded license PDU: %s", res)
+			# --- Detailed logging ---
+			data_len = len(data)
+			hex_preview = data[:64].hex()  # mostra apenas os primeiros 64 bytes para não poluir log
+			base64_preview = base64.b64encode(data[:64]).decode()
+			logger.debug("License PDU received: %d bytes", data_len)
+			logger.debug("License PDU first 64 bytes (hex): %s", hex_preview)
+			logger.debug("License PDU first 64 bytes (base64): %s", base64_preview)
+			logger.debug("Full PDU (hex): %s", data.hex())
 
+			# --- Decode DomainMCSPDU ---
+			try:
+				res = self._t125_per_codec.decode('DomainMCSPDU', data)
+				logger.debug("Decoded license PDU: %s", res)
+			except Exception as decode_err:
+				logger.error("Failed to decode license PDU: %s", traceback.format_exc())
+				raise decode_err
+
+			# --- Check tokenInhibitConfirm ---
 			if res[0] == 'tokenInhibitConfirm':
 				result = res[1].get('result', None)
 				logger.debug("tokenInhibitConfirm received with result: %s", result)
