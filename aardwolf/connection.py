@@ -246,7 +246,7 @@ class RDPConnection:
 					if self.credentials.secret and self.credentials.stype not in [
 						asyauthSecret.PASSWORD, asyauthSecret.PWPROMPT, asyauthSecret.PWHEX, asyauthSecret.PWB64
 					]:
-						self.client_x224_flags = NEG_FLAGS.RESTRICTED_ADMIN_MODE_REQUIRED
+						self.client_x224_flags = 0
 						self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID
 						logger.debug("Restricted Admin Mode required for non-password secret")
 					else:
