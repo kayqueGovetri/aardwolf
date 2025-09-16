@@ -706,49 +706,24 @@ class RDPConnection:
 
 	async def __send_userdata(self):
 		try:
-
-			# ----- SYSTEMTIME dinâmico -----
-			now = datetime.now()
 			systime = TS_SYSTEMTIME()
-			systime.wYear = int(now.year)
-			systime.wMonth = int(now.month)
-			systime.wDayOfWeek = int((now.weekday() + 1) % 7)  # domingo = 0 no seu código
-			systime.wDay = int(now.day)
-			systime.wHour = int(now.hour)
-			systime.wMinute = int(now.minute)
-			systime.wSecond = int(now.second)
-			systime.wMilliseconds = int(now.microsecond / 1000)
-
-			# ----- TIMEZONE dinâmico -----
-			tzinfo = datetime.now().astimezone()
-			utcoff = tzinfo.utcoffset() or timedelta(0)
-			dst = tzinfo.dst() or timedelta(0)
-
-			# Nota: no RDP o Bias costuma ser armazenado como unsigned 32-bit onde
-			# um value grande (ex: 4294967236) representa um negativo (-60 minutes).
-			offset_min = int(-utcoff.total_seconds() / 60)    # ex: -60 => 60? (seguindo sua convenção)
-			dst_offset = int(-dst.total_seconds() / 60) if (dst and dst.total_seconds() != 0) else 0
+			systime.wYear = 0
+			systime.wMonth = 10
+			systime.wDayOfWeek = 0
+			systime.wDay = 5
+			systime.wHour = 3
+			systime.wMinute = 0
+			systime.wSecond = 0
+			systime.wMilliseconds = 0
 
 			systz = TS_TIME_ZONE_INFORMATION()
-			systz.Bias = offset_min & 0xFFFFFFFF
-			# Nome do timezone: gerar uma string legível a partir do tzinfo se possível,
-			# fallback para os nomes genéricos usados antes.
-			try:
-				tz_name = tzinfo.tzname(None) or "GMT Standard Time"
-			except Exception:
-				tz_name = "GMT Standard Time"
-			try:
-				tz_day_name = tz_name + " Daylight"  # se não tiver nome distinto, cria um fallback
-			except Exception:
-				tz_day_name = "GMT Daylight Time"
-
-			# Converter para UTF-16LE + null terminator (vai produzir bytes como no seu hardcoded)
-			systz.StandardName = (tz_name).encode("utf-16le") + b"\x00\x00"
+			systz.Bias = 4294967236
+			systz.StandardName = b'G\x00T\x00B\x00,\x00 \x00s\x00o\x00m\x00m\x00a\x00r\x00t\x00i\x00d\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
 			systz.StandardDate = systime
 			systz.StandardBias = 0
-			systz.DaylightName = (tz_day_name).encode("utf-16le") + b"\x00\x00"
+			systz.DaylightName = b'G\x00T\x00B\x00,\x00 \x00s\x00o\x00m\x00m\x00a\x00r\x00t\x00i\x00d\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
 			systz.DaylightDate = systime
-			systz.DaylightBias = dst_offset & 0xFFFFFFFF
+			systz.DaylightBias = 4294967236
 
 			extinfo = TS_EXTENDED_INFO_PACKET()
 			extinfo.clientAddressFamily = CLI_AF.AF_INET
