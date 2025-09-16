@@ -853,10 +853,7 @@ class RDPConnection:
 			logger.debug("Step 1: Waiting for server capability response...")
 			server_caps = {}
 			try:
-				data, err = await asyncio.wait_for(
-					self.__joined_channels['MCS'].out_queue.get(),
-					timeout=2
-				)
+				data, err = await self.__joined_channels['MCS'].out_queue.get()
 				if err:
 					raise err
 
