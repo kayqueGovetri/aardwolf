@@ -719,6 +719,8 @@ class RDPConnection:
 
 			# ----- TIMEZONE dinâmico -----
 			offset_min = -int(datetime.now(timezone.utc).astimezone().utcoffset().total_seconds() / 60)
+			dst_offset = -int(datetime.now().astimezone().dst().total_seconds() / 60) if datetime.now().astimezone().dst() else 0
+
 			systz = TS_TIME_ZONE_INFORMATION()
 			systz.Bias = offset_min
 			systz.StandardName = b'GMT Standard Time'
@@ -726,7 +728,7 @@ class RDPConnection:
 			systz.StandardBias = 0
 			systz.DaylightName = b'GMT Daylight Time'
 			systz.DaylightDate = systime
-			systz.DaylightBias = -60  # exemplo, ajuste conforme DST local
+			systz.DaylightBias = dst_offset
 
 			# ----- EXTENDED INFO -----
 			extinfo = TS_EXTENDED_INFO_PACKET()
