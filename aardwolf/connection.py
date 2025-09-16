@@ -234,9 +234,11 @@ class RDPConnection:
 			client = UniClient(self.target, packetizer)
 			self.__connection = await client.connect()
 			logger.debug("TCP connection established with %s", self.target)
+			logger.debug("Connection object: %s", self.__connection)
 
 			# X224 para negociação inicial
 			self._x224net = X224Network(self.__connection)
+			logger.debug("X224 network initialized")
 
 			# Definir protocolos e flags de acordo com as credenciais e tipo de autenticação
 			if self.client_x224_supported_protocols is None and self.credentials is not None:
@@ -256,9 +258,10 @@ class RDPConnection:
 				else:
 					self.client_x224_flags = 0
 					self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
-			
-			self.x224_protocol = SUPP_PROTOCOLS.RDP  # 0x08
-			self.x224_flag = 0                        # ou None, já que não há flag extra para Standard RDP
+
+			# Forçar protocolo Standard RDP (0x08)
+			self.x224_protocol = SUPP_PROTOCOLS.RDP
+			self.x224_flag = 0
 			logger.debug("Forcing Standard RDP protocol (0x08)")
 			logger.debug("Client protocol flags: %s", self.client_x224_flags)
 			logger.debug("Client protocol offer: %s", self.client_x224_supported_protocols)
@@ -268,7 +271,10 @@ class RDPConnection:
 				self.client_x224_flags, self.client_x224_supported_protocols
 			)
 			if err:
+				logger.error("Error during X224 negotiation: %s", err)
 				raise err
+
+			logger.debug("Raw X224 negotiation reply: %s", connection_reply)
 
 			# Verificar qual protocolo foi selecionado pelo servidor
 			if connection_reply.rdpNegData:
@@ -276,6 +282,7 @@ class RDPConnection:
 				self.x224_protocol = self.x224_connection_reply.selectedProtocol
 				self.x224_flag = self.x224_connection_reply.flags
 				logger.debug("Server selected protocol: %s, flags: %s", self.x224_protocol, self.x224_flag)
+				logger.debug("Server RDP_NEG_RSP detail: %s", self.x224_connection_reply.__dict__)
 
 				# Configurar SSL se necessário
 				if self.x224_protocol & (SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID | SUPP_PROTOCOLS.HYBRID_EX):
@@ -287,20 +294,23 @@ class RDPConnection:
 						ssl_ctx.set_ciphers("ALL:@SECLEVEL=0")
 						logger.warning("Unsafe SSL enabled, skipping certificate verification")
 					await self.__connection.wrap_ssl(ssl_ctx=ssl_ctx)
+					logger.debug("SSL wrapped over TCP connection")
 
 				# CredSSP se HYBRID/HYBRID_EX
 				if self.x224_protocol & (SUPP_PROTOCOLS.HYBRID | SUPP_PROTOCOLS.HYBRID_EX):
+					logger.debug("Starting CredSSP authentication...")
 					_, err = await self.credssp_auth()
 					if err:
+						logger.error("CredSSP authentication failed: %s", err)
 						raise err
 					self.__connection.change_packetizer(TPKTPacketizer())
+					logger.debug("CredSSP authentication completed")
 			else:
 				# Protocolo antigo RDP
 				self.x224_protocol = SUPP_PROTOCOLS.RDP
 				self.x224_flag = None
 				logger.debug("Old RDP protocol selected")
 
-			
 			# Compilar codecs ASN.1 para canais e MCS
 			self.__t125_ber_codec = asn1tools.compile_string(MCSPDU_ver_2, "ber")
 			self._t125_per_codec = asn1tools.compile_string(MCSPDU_ver_2, "per")
