@@ -259,13 +259,6 @@ class RDPConnection:
 					self.client_x224_flags = 0
 					self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
 
-			# Forçar protocolo Standard RDP (0x08)
-			self.x224_protocol = SUPP_PROTOCOLS.RDP
-			self.x224_flag = 0
-			logger.debug("Forcing Standard RDP protocol (0x08)")
-			logger.debug("Client protocol flags: %s", self.client_x224_flags)
-			logger.debug("Client protocol offer: %s", self.client_x224_supported_protocols)
-
 			# Negociação com o servidor
 			connection_reply, err = await self._x224net.client_negotiate(
 				self.client_x224_flags, self.client_x224_supported_protocols
@@ -316,7 +309,9 @@ class RDPConnection:
 			self._t125_per_codec = asn1tools.compile_string(MCSPDU_ver_2, "per")
 			self.__t124_codec = asn1tools.compile_string(GCCPDU, "per")
 			logger.debug("ASN.1 codecs compiled successfully")
-			logger.debug('Establish channels...')
+
+			# Estabelecer canais MCS e logar cada PDU relevante
+			logger.debug("Establish channels...")
 
 			_, err = await self.__establish_channels()
 			if err is not None:
