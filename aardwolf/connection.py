@@ -7,7 +7,9 @@ import asyncio
 import traceback
 from typing import cast
 from collections import OrderedDict
-
+import socket
+import os
+from datetime import datetime, timezone
 import asn1tools
 from PIL import Image
 from aardwolf import logger
@@ -221,90 +223,86 @@ class RDPConnection:
 		await asyncio.wait_for(self.terminate(), timeout = 5)
 	
 	async def connect(self):
-		"""Initiates the connection to the server, and performs authentication and all necessary setups.
+		"""Initiates the connection to the server, performs authentication, protocol negotiation, and sets up channels.
 		Returns:
-			Tuple[bool, Exception]: _description_
+			Tuple[bool, Exception]: True if connection succeeds, else the exception encountered.
 		"""
 		try:
-
+			# Inicializa o TPKT e a conexão TCP
 			packetizer = TPKTPacketizer()
 			client = UniClient(self.target, packetizer)
 			self.__connection = await client.connect()
+			logger.debug("TCP connection established with %s", self.target)
 
-			# X224 channel is on top of TPKT, performs the initial negotiation
-			# between the server and our client (restricted admin mode, authentication methods etc)
-			# are set here
+			# X224 para negociação inicial
 			self._x224net = X224Network(self.__connection)
+
+			# Definir protocolos e flags de acordo com as credenciais e tipo de autenticação
 			if self.client_x224_supported_protocols is None and self.credentials is not None:
 				if self.credentials.protocol in [asyauthProtocol.NTLM, asyauthProtocol.KERBEROS]:
-					if self.credentials.secret is not None and self.credentials.stype not in [asyauthSecret.PASSWORD, asyauthSecret.PWPROMPT, asyauthSecret.PWHEX, asyauthSecret.PWB64]:
-						# user provided some secret but it's not a password
-						# here we request restricted admin mode
+					if self.credentials.secret and self.credentials.stype not in [
+						asyauthSecret.PASSWORD, asyauthSecret.PWPROMPT, asyauthSecret.PWHEX, asyauthSecret.PWB64
+					]:
 						self.client_x224_flags = NEG_FLAGS.RESTRICTED_ADMIN_MODE_REQUIRED
-						self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL |SUPP_PROTOCOLS.HYBRID
+						self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID
+						logger.debug("Restricted Admin Mode required for non-password secret")
 					else:
 						self.client_x224_flags = 0
 						self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID_EX | SUPP_PROTOCOLS.HYBRID
-				
-				elif self.credentials.stype == asyauthSecret.NONE: #and self.credentials.username is None:
-					# not sending any passwords, hoping HYBRID is not required
+				elif self.credentials.stype == asyauthSecret.NONE:
 					self.client_x224_flags = 0
 					self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
 				else:
 					self.client_x224_flags = 0
 					self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
-			
-			logger.debug('Client protocol flags: %s' % self.client_x224_flags)
-			logger.debug('Client protocol offer: %s' % self.client_x224_supported_protocols)
-			connection_accepted_reply, err = await self._x224net.client_negotiate(self.client_x224_flags, self.client_x224_supported_protocols)
-			if err is not None:
-				raise err
-			
-			if connection_accepted_reply.rdpNegData is not None:
-				# newer RDP protocol was selected
 
-				self.x224_connection_reply = typing.cast(RDP_NEG_RSP, connection_accepted_reply.rdpNegData)
-				# if the server requires SSL/TLS connection as indicated in the 'selectedProtocol' flags
-				# we switch here. SSL and HYBRID/HYBRID_EX authentication methods all require this switch
-				
-				
+			logger.debug("Client protocol flags: %s", self.client_x224_flags)
+			logger.debug("Client protocol offer: %s", self.client_x224_supported_protocols)
+
+			# Negociação com o servidor
+			connection_reply, err = await self._x224net.client_negotiate(
+				self.client_x224_flags, self.client_x224_supported_protocols
+			)
+			if err:
+				raise err
+
+			# Verificar qual protocolo foi selecionado pelo servidor
+			if connection_reply.rdpNegData:
+				self.x224_connection_reply = typing.cast(RDP_NEG_RSP, connection_reply.rdpNegData)
 				self.x224_protocol = self.x224_connection_reply.selectedProtocol
 				self.x224_flag = self.x224_connection_reply.flags
-				logger.debug('Server selected protocol: %s' % self.x224_protocol)
-				if SUPP_PROTOCOLS.SSL in self.x224_protocol or SUPP_PROTOCOLS.HYBRID in self.x224_protocol or SUPP_PROTOCOLS.HYBRID_EX in self.x224_protocol:
+				logger.debug("Server selected protocol: %s, flags: %s", self.x224_protocol, self.x224_flag)
+
+				# Configurar SSL se necessário
+				if self.x224_protocol & (SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID | SUPP_PROTOCOLS.HYBRID_EX):
+					ssl_ctx = None
 					if self.target.unsafe_ssl:
 						ssl_ctx = ssl.create_default_context()
 						ssl_ctx.check_hostname = False
 						ssl_ctx.verify_mode = ssl.CERT_NONE
-						ssl_ctx.set_ciphers('ALL:@SECLEVEL=0')
-						await self.__connection.wrap_ssl(ssl_ctx=ssl_ctx)
-					else:
-						await self.__connection.wrap_ssl()
+						ssl_ctx.set_ciphers("ALL:@SECLEVEL=0")
+						logger.warning("Unsafe SSL enabled, skipping certificate verification")
+					await self.__connection.wrap_ssl(ssl_ctx=ssl_ctx)
 
-				# if the server expects HYBRID/HYBRID_EX authentication we do that here
-				# This is basically credSSP
-				if SUPP_PROTOCOLS.HYBRID in self.x224_protocol or SUPP_PROTOCOLS.HYBRID_EX in self.x224_protocol:
+				# CredSSP se HYBRID/HYBRID_EX
+				if self.x224_protocol & (SUPP_PROTOCOLS.HYBRID | SUPP_PROTOCOLS.HYBRID_EX):
 					_, err = await self.credssp_auth()
-					if err is not None:
+					if err:
 						raise err
-					
-					#switching back to tpkt
 					self.__connection.change_packetizer(TPKTPacketizer())
-
 			else:
-				# old RDP protocol is used
+				# Protocolo antigo RDP
 				self.x224_protocol = SUPP_PROTOCOLS.RDP
 				self.x224_flag = None
+				logger.debug("Old RDP protocol selected")
 
-			# initializing the parsers here otherwise they'd waste time on connections that did not get to this point
-			# not kidding, this takes ages
-			self.__t125_ber_codec = asn1tools.compile_string(MCSPDU_ver_2, 'ber')
-			self._t125_per_codec = asn1tools.compile_string(MCSPDU_ver_2, 'per')
-			self.__t124_codec = asn1tools.compile_string(GCCPDU, 'per')
-
-			# All steps below are required as stated in the following 'documentation'
-			# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/1d263f84-6153-4a16-b329-8770be364e1b
+			# Compilar codecs ASN.1 para canais e MCS
+			self.__t125_ber_codec = asn1tools.compile_string(MCSPDU_ver_2, "ber")
+			self._t125_per_codec = asn1tools.compile_string(MCSPDU_ver_2, "per")
+			self.__t124_codec = asn1tools.compile_string(GCCPDU, "per")
+			logger.debug("ASN.1 codecs compiled successfully")
 			logger.debug('Establish channels...')
+
 			_, err = await self.__establish_channels()
 			if err is not None:
 				raise err
@@ -413,357 +411,418 @@ class RDPConnection:
 			return None, e
 
 	async def __establish_channels(self):
+		"""Establishes MCS channels, encodes user data, and performs initial MCS Connect sequence."""
 		try:
 			ts_ud = TS_UD()
 
+			# ---------- CS_CORE ----------
 			ud_core = TS_UD_CS_CORE()
 			ud_core.desktopWidth = self.iosettings.video_width
 			ud_core.desktopHeight = self.iosettings.video_height
-			# this part doesn matter since we also set postBeta2ColorDepth
-			#ud_core.colorDepth = COLOR_DEPTH.COLOR_8BPP
-			if self.iosettings.video_bpp_min == 4:
-				ud_core.colorDepth = COLOR_DEPTH.COLOR_4BPP
-			elif self.iosettings.video_bpp_min == 8:
-				ud_core.colorDepth = COLOR_DEPTH.COLOR_8BPP
-			elif self.iosettings.video_bpp_min == 15:
-				ud_core.colorDepth = COLOR_DEPTH.COLOR_16BPP_555
-			elif self.iosettings.video_bpp_min == 16:
-				ud_core.colorDepth = COLOR_DEPTH.COLOR_16BPP_565
-			elif self.iosettings.video_bpp_min == 24:
-				ud_core.colorDepth = COLOR_DEPTH.COLOR_24BPP
-			# from here on it matters
 
+			# Configura color depth mínimo
+			color_depth_map = {
+				4: COLOR_DEPTH.COLOR_4BPP,
+				8: COLOR_DEPTH.COLOR_8BPP,
+				15: COLOR_DEPTH.COLOR_16BPP_555,
+				16: COLOR_DEPTH.COLOR_16BPP_565,
+				24: COLOR_DEPTH.COLOR_24BPP
+			}
+			ud_core.colorDepth = color_depth_map.get(self.iosettings.video_bpp_min, COLOR_DEPTH.COLOR_8BPP)
+			ud_core.postBeta2ColorDepth = color_depth_map.get(self.iosettings.video_bpp_min, COLOR_DEPTH.COLOR_8BPP)
+
+			# Keyboard and client info
 			ud_core.keyboardLayout = self.iosettings.keyboard_layout
 			ud_core.clientBuild = 2600
-			ud_core.clientName = 'aardworlf'
-			ud_core.imeFileName = ''
-			#ud_core.postBeta2ColorDepth = COLOR_DEPTH.COLOR_8BPP
-			if self.iosettings.video_bpp_min == 4:
-				ud_core.postBeta2ColorDepth = COLOR_DEPTH.COLOR_4BPP
-			elif self.iosettings.video_bpp_min == 8:
-				ud_core.postBeta2ColorDepth = COLOR_DEPTH.COLOR_8BPP
-			elif self.iosettings.video_bpp_min == 15:
-				ud_core.postBeta2ColorDepth = COLOR_DEPTH.COLOR_16BPP_555
-			elif self.iosettings.video_bpp_min == 16:
-				ud_core.postBeta2ColorDepth = COLOR_DEPTH.COLOR_16BPP_565
-			elif self.iosettings.video_bpp_min == 24:
-				ud_core.postBeta2ColorDepth = COLOR_DEPTH.COLOR_24BPP
-
+			ud_core.clientName = "aardwolf"
+			ud_core.imeFileName = ""
 			ud_core.clientProductId = 1
 			ud_core.serialNumber = 0
-			ud_core.highColorDepth = HIGH_COLOR_DEPTH.HIGH_COLOR_16BPP
 
-			if self.iosettings.video_bpp_max == 4:
-				ud_core.highColorDepth = HIGH_COLOR_DEPTH.HIGH_COLOR_4BPP
-			elif self.iosettings.video_bpp_max == 8:
-				ud_core.highColorDepth = HIGH_COLOR_DEPTH.HIGH_COLOR_8BPP
-			elif self.iosettings.video_bpp_max == 15:
-				ud_core.highColorDepth = HIGH_COLOR_DEPTH.HIGH_COLOR_15BPP
-			elif self.iosettings.video_bpp_max == 16:
-				ud_core.highColorDepth = HIGH_COLOR_DEPTH.HIGH_COLOR_16BPP
-			elif self.iosettings.video_bpp_max == 24:
-				ud_core.highColorDepth = HIGH_COLOR_DEPTH.HIGH_COLOR_24BPP
+			# High color depth máximo
+			high_color_map = {
+				4: HIGH_COLOR_DEPTH.HIGH_COLOR_4BPP,
+				8: HIGH_COLOR_DEPTH.HIGH_COLOR_8BPP,
+				15: HIGH_COLOR_DEPTH.HIGH_COLOR_15BPP,
+				16: HIGH_COLOR_DEPTH.HIGH_COLOR_16BPP,
+				24: HIGH_COLOR_DEPTH.HIGH_COLOR_24BPP
+			}
+			ud_core.highColorDepth = high_color_map.get(self.iosettings.video_bpp_max, HIGH_COLOR_DEPTH.HIGH_COLOR_16BPP)
 
-			self.iosettings.video_bpp_supported.append(self.iosettings.video_bpp_max)
-			self.iosettings.video_bpp_supported.append(self.iosettings.video_bpp_min)
-			ud_core.supportedColorDepths = SUPPORTED_COLOR_DEPTH.RNS_UD_16BPP_SUPPORT
-			for sc in self.iosettings.video_bpp_supported:
-				if sc == 15:
-					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_15BPP_SUPPORT
-				elif sc == 16:
-					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_16BPP_SUPPORT
-				elif sc == 24:
-					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_24BPP_SUPPORT
-				elif sc == 32:
-					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_32BPP_SUPPORT
-			
+			# Suporte a múltiplos color depths
+			self.iosettings.video_bpp_supported = [self.iosettings.video_bpp_min, self.iosettings.video_bpp_max]
+			ud_core.supportedColorDepths = 0
+			supported_color_flag_map = {
+				15: SUPPORTED_COLOR_DEPTH.RNS_UD_15BPP_SUPPORT,
+				16: SUPPORTED_COLOR_DEPTH.RNS_UD_16BPP_SUPPORT,
+				24: SUPPORTED_COLOR_DEPTH.RNS_UD_24BPP_SUPPORT,
+				32: SUPPORTED_COLOR_DEPTH.RNS_UD_32BPP_SUPPORT
+			}
+			for bpp in self.iosettings.video_bpp_supported:
+				ud_core.supportedColorDepths |= supported_color_flag_map.get(bpp, 0)
+
 			ud_core.earlyCapabilityFlags = RNS_UD_CS.SUPPORT_ERRINFO_PDU
-			ud_core.clientDigProductId = b'\x00' * 64
+			ud_core.clientDigProductId = b"\x00" * 64
 			ud_core.connectionType = CONNECTION_TYPE.UNK
-			ud_core.pad1octet = b'\x00'
+			ud_core.pad1octet = b"\x00"
 			ud_core.serverSelectedProtocol = self.x224_protocol
-			
+
+			# ---------- CS_SECURITY ----------
 			ud_sec = TS_UD_CS_SEC()
-			ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH if self.x224_protocol is not SUPP_PROTOCOLS.RDP else ENCRYPTION_FLAG.BIT_128
+			if self.x224_protocol != SUPP_PROTOCOLS.RDP:
+				ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH
+			else:
+				ud_sec.encryptionMethods = ENCRYPTION_FLAG.BIT_128
 			ud_sec.extEncryptionMethods = ENCRYPTION_FLAG.FRENCH
 
+			# ---------- CS_CLUSTER ----------
 			ud_clust = TS_UD_CS_CLUSTER()
 			ud_clust.RedirectedSessionID = 0
-			ud_clust.Flags = 8|4|ClusterInfo.REDIRECTION_SUPPORTED
+			ud_clust.Flags = 8 | 4 | ClusterInfo.REDIRECTION_SUPPORTED
 
+			# ---------- CS_NET ----------
 			ud_net = TS_UD_CS_NET()
-			
-			for name in self.__joined_channels:
+			for name, channel in self.__joined_channels.items():
 				cd = CHANNEL_DEF()
 				cd.name = name
-				cd.options = self.__joined_channels[name].options
+				cd.options = channel.options
 				ud_net.channelDefArray.append(cd)
-			
 
 			ts_ud.userdata = {
-				TS_UD_TYPE.CS_CORE : ud_core,
-				TS_UD_TYPE.CS_SECURITY : ud_sec,
-				TS_UD_TYPE.CS_CLUSTER : ud_clust,
-				TS_UD_TYPE.CS_NET : ud_net
+				TS_UD_TYPE.CS_CORE: ud_core,
+				TS_UD_TYPE.CS_SECURITY: ud_sec,
+				TS_UD_TYPE.CS_CLUSTER: ud_clust,
+				TS_UD_TYPE.CS_NET: ud_net
 			}
 
+			# Empacotamento T124
 			userdata_wrapped = {
-				'conferenceName': {
-					'numeric': '0'
-				}, 
-				'lockedConference': False, 
-				'listedConference': False, 
-				'conductibleConference': False, 
-				'terminationMethod': 'automatic', 
-				'userData': [
-					{
-						'key': ('h221NonStandard', b'Duca'), 
-						'value': ts_ud.to_bytes()
-					}
-				]
+				"conferenceName": {"numeric": "0"},
+				"lockedConference": False,
+				"listedConference": False,
+				"conductibleConference": False,
+				"terminationMethod": "automatic",
+				"userData": [{"key": ("h221NonStandard", b"Duca"), "value": ts_ud.to_bytes()}]
+			}
+			connect_gcc_pdu = self.__t124_codec.encode("ConnectGCCPDU", ("conferenceCreateRequest", userdata_wrapped))
+			t124_wrapper = self.__t124_codec.encode(
+				"ConnectData",
+				{"t124Identifier": ("object", "0.0.20.124.0.1"), "connectPDU": connect_gcc_pdu},
+			)
+
+			# Connect MCS PDU
+			initial_connect = {
+				"callingDomainSelector": b"\x01",
+				"calledDomainSelector": b"\x01",
+				"upwardFlag": True,
+				"targetParameters": {"maxChannelIds": 34, "maxUserIds": 2, "maxTokenIds": 0, "numPriorities": 1, "minThroughput": 0, "maxHeight": 1, "maxMCSPDUsize": -1, "protocolVersion": 2},
+				"minimumParameters": {"maxChannelIds": 1, "maxUserIds": 1, "maxTokenIds": 1, "numPriorities": 1, "minThroughput": 0, "maxHeight": 1, "maxMCSPDUsize": 1056, "protocolVersion": 2},
+				"maximumParameters": {"maxChannelIds": -1, "maxUserIds": -1001, "maxTokenIds": -1, "numPriorities": 1, "minThroughput": 0, "maxHeight": 1, "maxMCSPDUsize": -1, "protocolVersion": 2},
+				"userData": t124_wrapper,
 			}
 
-			ConnectGCCPDU = self.__t124_codec.encode('ConnectGCCPDU', ('conferenceCreateRequest', userdata_wrapped))
-			t124_wrapper = {
-				't124Identifier': ('object', '0.0.20.124.0.1'), 
-				'connectPDU': ConnectGCCPDU
-			}
-			t124_wrapper = self.__t124_codec.encode('ConnectData', t124_wrapper)
-
-			initialconnect = {
-				'callingDomainSelector': b'\x01', 
-				'calledDomainSelector': b'\x01', 
-				'upwardFlag': True, 
-				'targetParameters': {
-					'maxChannelIds': 34, 
-					'maxUserIds': 2, 
-					'maxTokenIds': 0, 
-					'numPriorities': 1, 
-					'minThroughput': 0, 
-					'maxHeight': 1, 
-					'maxMCSPDUsize': -1, 
-					'protocolVersion': 2
-				}, 
-				'minimumParameters': {
-					'maxChannelIds': 1, 
-					'maxUserIds': 1, 
-					'maxTokenIds': 1, 
-					'numPriorities': 1, 
-					'minThroughput': 0, 
-					'maxHeight': 1, 
-					'maxMCSPDUsize': 1056, 
-					'protocolVersion': 2
-				}, 
-				'maximumParameters': {
-					'maxChannelIds': -1, 
-					'maxUserIds': -1001, 
-					'maxTokenIds': -1, 
-					'numPriorities': 1, 
-					'minThroughput': 0, 
-					'maxHeight': 1, 
-					'maxMCSPDUsize': -1, 
-					'protocolVersion': 2
-				}, 
-				'userData': t124_wrapper
-			}
-
-			conf_create_req = self.__t125_ber_codec.encode('ConnectMCSPDU',('connect-initial', initialconnect))
+			conf_create_req = self.__t125_ber_codec.encode("ConnectMCSPDU", ("connect-initial", initial_connect))
 			await self._x224net.write(bytes(conf_create_req))
-			
+			logger.debug("Initial MCS Connect sent")
+
+			# Leitura da resposta
 			response_raw = await self._x224net.read()
-			if response_raw is None:
-				raise Exception('Connection closed!')
+			if not response_raw:
+				raise ConnectionError("Connection closed by server during MCS connect")
+
 			server_res_raw = response_raw.data
-			server_res_t125 = self.__t125_ber_codec.decode('ConnectMCSPDU', server_res_raw)
-			if server_res_t125[0] != 'connect-response':
-				raise Exception('Unexpected response! %s' % server_res_t125)
-			if server_res_t125[1]['result'] != 'rt-successful':
-				raise Exception('Server returned error! %s' % server_res_t125)
-			
-			server_res_t124 = self.__t124_codec.decode('ConnectData', server_res_t125[1]['userData'])
-			if server_res_t124['t124Identifier'][1] != '0.0.20.124.0.1':
-				raise Exception('Unexpected T124 response: %s' % server_res_t124)
-			
-			# this is strange, and it seems wireshark struggles here as well. 
-			# it seems the encoding used does not account for all the packet 
-			# bytes at the end but those are also needed for decoding the sub-strucutres?!
+			server_res_t125 = self.__t125_ber_codec.decode("ConnectMCSPDU", server_res_raw)
+			if server_res_t125[0] != "connect-response" or server_res_t125[1]["result"] != "rt-successful":
+				raise ConnectionError(f"Unexpected MCS response: {server_res_t125}")
 
-			data = server_res_t124['connectPDU']
+			server_res_t124 = self.__t124_codec.decode("ConnectData", server_res_t125[1]["userData"])
+			if server_res_t124["t124Identifier"][1] != "0.0.20.124.0.1":
+				raise ValueError(f"Unexpected T124 response: {server_res_t124}")
+
+			# Decodifica final do server connect PDU
+			data = server_res_t124["connectPDU"]
 			m = server_res_raw.find(data)
-			remdata = server_res_raw[m+len(data):]
-			
-			# weirdness ends here... FOR NOW!
+			remdata = server_res_raw[m + len(data) :]
+			server_connect_pdu_raw = self.__t124_codec.decode("ConnectGCCPDU", data + remdata)
+			self.__server_connect_pdu = TS_SC.from_bytes(server_connect_pdu_raw[1]["userData"][0]["value"]).serverdata
 
-			server_connect_pdu_raw = self.__t124_codec.decode('ConnectGCCPDU', server_res_t124['connectPDU']+remdata)
-			self.__server_connect_pdu = TS_SC.from_bytes(server_connect_pdu_raw[1]['userData'][0]['value']).serverdata
-			
-			logger.log(1, 'Server capability set: %s' % self.__server_connect_pdu)
+			logger.debug("Server capability set: %s", self.__server_connect_pdu)
 
-			# populating channels
+			# Populando canais
 			scnet = self.__server_connect_pdu[TS_UD_TYPE.SC_NET]
 			for i, name in enumerate(self.__joined_channels):
 				self.__joined_channels[name].channel_id = scnet.channelIdArray[i]
 				self.__channel_id_lookup[scnet.channelIdArray[i]] = self.__joined_channels[name]
 
-			self.__joined_channels['MCS'] = MCSChannel() #TODO: options?
-			self.__joined_channels['MCS'].channel_id = scnet.MCSChannelId
-			self.__channel_id_lookup[scnet.MCSChannelId] = self.__joined_channels['MCS']
+			self.__joined_channels["MCS"] = MCSChannel()
+			self.__joined_channels["MCS"].channel_id = scnet.MCSChannelId
+			self.__channel_id_lookup[scnet.MCSChannelId] = self.__joined_channels["MCS"]
 
 			return True, None
 		except Exception as e:
-			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			logger.error("Error in __establish_channels: %s\n%s", e, traceback.format_exc())
 			return None, e
+
 
 	async def __erect_domain(self):
+		"""
+		Sends the initial domain establishment request over the X224 network.
+		The content is static and cannot be encoded/decoded reliably with the parser,
+		so we send it as raw bytes (as per protocol documentation).
+		
+		Returns:
+			Tuple[bool, Exception]: True if successful, else None and the exception.
+		"""
 		try:
-			# the parser could not decode nor encode this data correctly.
-			# therefore we are sending these as bytes. it's static 
-			# (even according to docu)
-			await self._x224net.write(bytes.fromhex('0400010001'))
+			domain_request_bytes = bytes.fromhex('0400010001')
+			await self._x224net.write(domain_request_bytes)
+			logger.debug("Erect domain PDU sent: %s", domain_request_bytes.hex())
 			return True, None
 		except Exception as e:
+			logger.error("Error in __erect_domain: %s\n%s", e, traceback.format_exc())
 			return None, e
-	
+		
 	async def __attach_user(self):
+		"""
+		Sends an Attach User request to the MCS layer and waits for the server confirmation.
+		
+		Returns:
+			Tuple[bool, Exception]: True if successful, else None and the exception.
+		"""
 		try:
-			request = self._t125_per_codec.encode('DomainMCSPDU', ('attachUserRequest', {}))
-			await self._x224net.write(request)
+			# Encode the attachUserRequest PDU
+			request_pdu = self._t125_per_codec.encode('DomainMCSPDU', ('attachUserRequest', {}))
+			await self._x224net.write(request_pdu)
+			logger.debug("AttachUserRequest sent")
+
+			# Read server response
 			response = await self._x224net.read()
 			if response is None:
-				raise Exception('Connection closed!')
+				raise Exception('Connection closed by server during attach user')
+
+			# Decode response
 			response_parsed = self._t125_per_codec.decode('DomainMCSPDU', response.data)
 			if response_parsed[0] != 'attachUserConfirm':
-				raise Exception('Unexpected response! %s' % response_parsed[0])
+				raise Exception(f'Unexpected response type: {response_parsed[0]}')
 			if response_parsed[1]['result'] != 'rt-successful':
-				raise Exception('Server returned error! %s' % response_parsed[0])
+				raise Exception(f'Server returned error on attach user: {response_parsed[1]["result"]}')
+
+			# Store initiator ID for future requests
 			self._initiator = response_parsed[1]['initiator']
-			
+			logger.debug("AttachUserConfirm received, initiator: %s", self._initiator)
+
 			return True, None
+
 		except Exception as e:
+			logger.error("Error in __attach_user: %s\n%s", e, traceback.format_exc())
 			return None, e
 	
 	async def __join_channels(self):
+		"""
+		Sends channel join requests for all joined channels and starts the reader tasks.
+
+		Returns:
+			Tuple[bool, Exception]: True if all channels joined successfully, else None and the exception.
+		"""
 		try:
-			for name in self.__joined_channels:
-				joindata = self._t125_per_codec.encode('DomainMCSPDU', ('channelJoinRequest', {'initiator': self._initiator, 'channelId': self.__joined_channels[name].channel_id}))
+			for name, channel in self.__joined_channels.items():
+				# Encode and send the channelJoinRequest PDU
+				joindata = self._t125_per_codec.encode(
+					'DomainMCSPDU',
+					('channelJoinRequest', {'initiator': self._initiator, 'channelId': channel.channel_id})
+				)
 				await self._x224net.write(bytes(joindata))
+				logger.debug("ChannelJoinRequest sent for channel: %s (ID: %s)", name, channel.channel_id)
+
+				# Await server confirmation
 				response = await self._x224net.read()
 				if response is None:
-					raise Exception('Connection closed!')
-				
-				x = self._t125_per_codec.decode('DomainMCSPDU', response.data)
-				if x[0] != 'channelJoinConfirm':
-					raise Exception('Could not join channel "%s". Reason: %s' % (name, x))
-				
-				self.__channel_task[name] = asyncio.create_task(self.__joined_channels[name].run(self))
-				
-			
+					raise Exception(f'Connection closed by server while joining channel: {name}')
+
+				# Decode response
+				decoded = self._t125_per_codec.decode('DomainMCSPDU', response.data)
+				if decoded[0] != 'channelJoinConfirm':
+					raise Exception(f'Could not join channel "{name}". Server response: {decoded}')
+
+				logger.debug("Channel joined successfully: %s", name)
+
+				# Start the channel task
+				self.__channel_task[name] = asyncio.create_task(channel.run(self))
+
+			# Start the X224 reader task
 			self.__x224_reader_task = asyncio.create_task(self.__x224_reader())
+			logger.debug("X224 reader task started")
+
 			return True, None
+
 		except Exception as e:
+			logger.error("Error in __join_channels: %s\n%s", e, traceback.format_exc())
 			return None, e
-	
+
 	async def __security_exchange(self):
+		"""
+		Performs the RDP security exchange using the server's certificate and client random.
+		
+		Returns:
+			Tuple[bool, Exception]: True if the security exchange succeeded, else None and the exception.
+		"""
 		try:
-			self.cryptolayer = RDPCryptoLayer(self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].serverRandom)
-			enc_secret = self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].serverCertificate.encrypt(self.cryptolayer.ClientRandom)
+			server_security = self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY]
+
+			# Initialize cryptography layer with server random
+			self.cryptolayer = RDPCryptoLayer(server_security.serverRandom)
+			logger.debug("Initialized RDPCryptoLayer with server random")
+
+			# Encrypt the client random using the server certificate
+			enc_secret = server_security.serverCertificate.encrypt(self.cryptolayer.ClientRandom)
+			logger.debug("Encrypted client random using server certificate")
+
+			# Prepare security exchange packet
 			secexchange = TS_SECURITY_PACKET()
 			secexchange.encryptedClientRandom = enc_secret
 
+			# Prepare security header
 			sec_hdr = TS_SECURITY_HEADER()
 			sec_hdr.flags = SEC_HDR_FLAG.EXCHANGE_PKT
 			sec_hdr.flagsHi = 0
 
-			await self.handle_out_data(secexchange, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+			# Send the packet over MCS channel
+			await self.handle_out_data(
+				secexchange,
+				sec_hdr,
+				None,
+				None,
+				self.__joined_channels['MCS'].channel_id,
+				False
+			)
+			logger.debug("Security exchange packet sent on MCS channel")
+
 			return True, None
+
 		except Exception as e:
+			logger.error("Error in __security_exchange: %s\n%s", e, traceback.format_exc())
 			return None, e
 
 	async def __send_userdata(self):
 		try:
+			# ----- SYSTEMTIME dinâmico -----
+			now = datetime.now()
 			systime = TS_SYSTEMTIME()
-			systime.wYear = 0
-			systime.wMonth = 10
-			systime.wDayOfWeek = 0
-			systime.wDay = 5
-			systime.wHour = 3
-			systime.wMinute = 0
-			systime.wSecond = 0
-			systime.wMilliseconds = 0
+			systime.wYear = now.year
+			systime.wMonth = now.month
+			systime.wDayOfWeek = now.weekday()
+			systime.wDay = now.day
+			systime.wHour = now.hour
+			systime.wMinute = now.minute
+			systime.wSecond = now.second
+			systime.wMilliseconds = int(now.microsecond / 1000)
 
+			# ----- TIMEZONE dinâmico -----
+			offset_min = -int(datetime.now(timezone.utc).astimezone().utcoffset().total_seconds() / 60)
 			systz = TS_TIME_ZONE_INFORMATION()
-			systz.Bias = 4294967236
-			systz.StandardName = b'G\x00T\x00B\x00,\x00 \x00s\x00o\x00m\x00m\x00a\x00r\x00t\x00i\x00d\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+			systz.Bias = offset_min
+			systz.StandardName = b'GMT Standard Time'
 			systz.StandardDate = systime
 			systz.StandardBias = 0
-			systz.DaylightName = b'G\x00T\x00B\x00,\x00 \x00s\x00o\x00m\x00m\x00a\x00r\x00t\x00i\x00d\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+			systz.DaylightName = b'GMT Daylight Time'
 			systz.DaylightDate = systime
-			systz.DaylightBias = 4294967236
+			systz.DaylightBias = -60  # exemplo, ajuste conforme DST local
 
+			# ----- EXTENDED INFO -----
 			extinfo = TS_EXTENDED_INFO_PACKET()
 			extinfo.clientAddressFamily = CLI_AF.AF_INET
-			extinfo.clientAddress = '10.10.10.101'
-			extinfo.clientDir = 'C:\\WINNT\\System32\\mstscax.dll'
+
+			# IP dinâmico da interface principal
+			try:
+				extinfo.clientAddress = socket.gethostbyname(socket.gethostname())
+			except Exception:
+				extinfo.clientAddress = '127.0.0.1'
+
+			# Diretório do cliente
+			if os.name == 'nt':
+				extinfo.clientDir = os.path.join(os.environ.get('SYSTEMROOT', 'C:\\Windows'), 'System32', 'mstscax.dll')
+			else:
+				extinfo.clientDir = '/usr/bin/fake-mstscax.dll'
+
 			extinfo.clientTimeZone = systz
 			extinfo.clientSessionId = 0
 			if self.iosettings.performance_flags is not None:
 				extinfo.performanceFlags = self.iosettings.performance_flags
 
+			# ----- INFO PACKET -----
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
-			info.flags = INFO_FLAG.ENABLEWINDOWSKEY|INFO_FLAG.MAXIMIZESHELL|INFO_FLAG.UNICODE|INFO_FLAG.DISABLECTRLALTDEL|INFO_FLAG.MOUSE
-			info.Domain = ''
-			info.UserName = ''
-			info.Password = ''
-			if self.authapi is None or SUPP_PROTOCOLS.SSL in self.x224_protocol:
-				if self.credentials.domain is not None:
-					info.Domain = self.credentials.domain
-				if self.credentials.username is not None:
-					info.UserName = self.credentials.username
-				if self.credentials.secret is not None:
-					info.Password = self.credentials.secret
-			info.AlternateShell = '' 
+			info.flags = INFO_FLAG.ENABLEWINDOWSKEY | INFO_FLAG.MAXIMIZESHELL | INFO_FLAG.UNICODE | INFO_FLAG.DISABLECTRLALTDEL | INFO_FLAG.MOUSE
+			info.Domain = self.credentials.domain or ''
+			info.UserName = self.credentials.username or ''
+			info.Password = self.credentials.secret or ''
+			info.AlternateShell = ''
 			info.WorkingDir = ''
 			info.extrainfo = extinfo
 
+			# ----- SECURITY HEADER -----
 			sec_hdr = TS_SECURITY_HEADER()
 			sec_hdr.flags = SEC_HDR_FLAG.INFO_PKT
 			if self.cryptolayer is not None:
 				sec_hdr.flags |= SEC_HDR_FLAG.ENCRYPT
 			sec_hdr.flagsHi = 0
 
-			await self.handle_out_data(info, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+			# ----- SEND -----
+			await self.handle_out_data(
+				info,
+				sec_hdr,
+				None,
+				None,
+				self.__joined_channels['MCS'].channel_id,
+				False
+			)
+
 			return True, None
 		except Exception as e:
 			return None, e
+
 
 	async def __handle_license(self):
+		"""
+		Handles the RDP license exchange. Currently simplified to process tokenInhibitConfirm.
+		
+		Returns:
+			Tuple[bool, Exception]: True if license handling was successful, else None and the exception.
+		"""
 		try:
-			# TODO: implement properly
-			# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/7d941d0d-d482-41c5-b728-538faa3efb31
+			# Wait for license-related data from MCS channel
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
-			if err is not None:
+			if err:
 				raise err
-			
+
+			# Decode the DomainMCSPDU
 			res = self._t125_per_codec.decode('DomainMCSPDU', data)
-			logger.debug(f"Decoded license PDU: {res}")
+			logger.debug("Decoded license PDU: %s", res)
 
 			if res[0] == 'tokenInhibitConfirm':
-				logger.debug(f"tokenInhibitConfirm received: {res[1]}")
-				if res[1]['result'] != 'rt-successful':
-					logger.debug(f"License result not successful: {res[1]['result']}")
-					raise Exception('License error! tokenInhibitConfirm:result not successful')
+				result = res[1].get('result', None)
+				logger.debug("tokenInhibitConfirm received with result: %s", result)
+				if result != 'rt-successful':
+					raise Exception(f"License error: tokenInhibitConfirm result not successful: {result}")
 			else:
-				logger.debug(f"Unexpected license PDU type: {res[0]}")
-				raise Exception('tokenInhibitConfirm did not show up in reply!')
+				raise Exception(f"Unexpected license PDU type received: {res[0]}")
 
-
+			logger.debug("License handling completed successfully")
 			return True, None
+
 		except Exception as e:
-			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			logger.error("Error in __handle_license: %s\n%s", e, traceback.format_exc())
 			return None, e
+
 	
-	async def __handle_mandatory_capability_exchange(self):	
+	async def __handle_mandatory_capability_exchange(self):
+		"""
+		Handles the mandatory RDP capability exchange with the server.
+		Sends CONFIRM_ACTIVE and initial SYNCHRONIZE, CONTROL, and FONTLIST PDUs.
+
+		Returns:
+			Tuple[bool, Exception]: True if successful, else None and the exception.
+		"""
 		try:
 			SHARE_ID = 0x103EA
 			channel_id = self.__joined_channels['MCS'].channel_id
@@ -773,85 +832,83 @@ class RDPConnection:
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
 
-			# ---------- Step 1: Try to get any server PDU ----------
-			logger.debug("Step 1: Waiting server capability response...")
+			# ---------- Step 1: Receive server capability PDU ----------
+			logger.debug("Step 1: Waiting for server capability response...")
 			server_caps = {}
 			try:
 				data, err = await asyncio.wait_for(
 					self.__joined_channels['MCS'].out_queue.get(),
 					timeout=2
 				)
-				if err is not None:
+				if err:
 					raise err
-				data_start_offset = 0
-				if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
-					data_start_offset = 4
+
+				data_start_offset = 4 if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1 else 0
 				data = data[data_start_offset:]
+
 				shc = TS_SHARECONTROLHEADER.from_bytes(data)
 
-				# Extract capability sets if available
 				if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
 					res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
 					for cap_set in res.capabilitySets:
 						server_caps[cap_set.capabilitySetType] = cap_set.capability
-					logger.debug(f"Step 1: Extracted server capability sets: {list(server_caps.keys())}")
+					logger.debug("Step 1: Extracted server capability sets: %s", list(server_caps.keys()))
 				elif shc.pduType == PDUTYPE.DATAPDU:
 					shd = TS_SHAREDATAHEADER.from_bytes(data)
-					logger.debug(f"Step 1: Received DATAPDU: {shd.pduType2.name}")
+					logger.debug("Step 1: Received DATAPDU: %s", shd.pduType2.name)
 				else:
-					logger.debug(f"Step 1: Unexpected PDU: {shc.pduType.name}, ignoring")
+					logger.debug("Step 1: Unexpected PDU: %s, ignoring", shc.pduType.name)
 			except asyncio.TimeoutError:
-				logger.debug("Step 1: No server capability PDU received, will use defaults.")
+				logger.debug("Step 1: No server capability PDU received; defaults will be used.")
 
-			# ---------- Step 2: Build client capabilities dynamically ----------
+			# ---------- Step 2: Build client capabilities ----------
 			caps = []
 
 			# GENERAL capability
-			cap = TS_GENERAL_CAPABILITYSET()
-			cap.osMajorType = OSMAJORTYPE.WINDOWS
-			cap.osMinorType = OSMINORTYPE.WINDOWS_NT
-			cap.extraFlags = EXTRAFLAG.FASTPATH_OUTPUT_SUPPORTED | EXTRAFLAG.NO_BITMAP_COMPRESSION_HDR | EXTRAFLAG.LONG_CREDENTIALS_SUPPORTED
+			general_cap = TS_GENERAL_CAPABILITYSET()
+			general_cap.osMajorType = OSMAJORTYPE.WINDOWS
+			general_cap.osMinorType = OSMINORTYPE.WINDOWS_NT
+			general_cap.extraFlags = EXTRAFLAG.FASTPATH_OUTPUT_SUPPORTED | EXTRAFLAG.NO_BITMAP_COMPRESSION_HDR | EXTRAFLAG.LONG_CREDENTIALS_SUPPORTED
 			if self.cryptolayer and getattr(self.cryptolayer, 'use_encrypted_mac', False):
-				cap.extraFlags |= EXTRAFLAG.ENC_SALTED_CHECKSUM
-			# Adjust GENERAL based on server (if known)
+				general_cap.extraFlags |= EXTRAFLAG.ENC_SALTED_CHECKSUM
+
 			if CAPSTYPE.GENERAL in server_caps:
 				srv_gen = typing.cast(TS_GENERAL_CAPABILITYSET, server_caps[CAPSTYPE.GENERAL])
-				cap.extraFlags |= (srv_gen.extraFlags & (EXTRAFLAG.ENCRYPTION_MASK))
-			caps.append(cap)
-			logger.debug(f"Step 2: GENERAL capability: {cap.extraFlags}")
+				general_cap.extraFlags |= srv_gen.extraFlags & EXTRAFLAG.ENCRYPTION_MASK
+
+			caps.append(general_cap)
+			logger.debug("Step 2: GENERAL capability set: %s", general_cap.extraFlags)
 
 			# BITMAP capability
-			cap = TS_BITMAP_CAPABILITYSET()
-			cap.desktopWidth = min(self.iosettings.video_width, getattr(server_caps.get(CAPSTYPE.BITMAP, TS_BITMAP_CAPABILITYSET()), 'desktopWidth', self.iosettings.video_width))
-			cap.desktopHeight = min(self.iosettings.video_height, getattr(server_caps.get(CAPSTYPE.BITMAP, TS_BITMAP_CAPABILITYSET()), 'desktopHeight', self.iosettings.video_height))
-			cap.preferredBitsPerPixel = min(self.iosettings.video_bpp_max, getattr(server_caps.get(CAPSTYPE.BITMAP, TS_BITMAP_CAPABILITYSET()), 'preferredBitsPerPixel', self.iosettings.video_bpp_max))
-			caps.append(cap)
-			logger.debug(f"Step 2: BITMAP capability: {cap.desktopWidth}x{cap.desktopHeight}@{cap.preferredBitsPerPixel}bpp")
+			bitmap_cap = TS_BITMAP_CAPABILITYSET()
+			srv_bitmap = server_caps.get(CAPSTYPE.BITMAP, TS_BITMAP_CAPABILITYSET())
+			bitmap_cap.desktopWidth = min(self.iosettings.video_width, getattr(srv_bitmap, 'desktopWidth', self.iosettings.video_width))
+			bitmap_cap.desktopHeight = min(self.iosettings.video_height, getattr(srv_bitmap, 'desktopHeight', self.iosettings.video_height))
+			bitmap_cap.preferredBitsPerPixel = min(self.iosettings.video_bpp_max, getattr(srv_bitmap, 'preferredBitsPerPixel', self.iosettings.video_bpp_max))
+			caps.append(bitmap_cap)
+			logger.debug("Step 2: BITMAP capability set: %dx%d@%dbpp", bitmap_cap.desktopWidth, bitmap_cap.desktopHeight, bitmap_cap.preferredBitsPerPixel)
 
 			# ORDER capability
-			cap = TS_ORDER_CAPABILITYSET()
+			order_cap = TS_ORDER_CAPABILITYSET()
 			srv_order_flags = getattr(server_caps.get(CAPSTYPE.ORDER, TS_ORDER_CAPABILITYSET()), 'orderFlags', 0)
-			cap.orderFlags = ORDERFLAG.ZEROBOUNDSDELTASSUPPORT | ORDERFLAG.NEGOTIATEORDERSUPPORT | ORDERFLAG.SOLIDPATTERNBRUSHONLY | srv_order_flags
-			caps.append(cap)
+			order_cap.orderFlags = ORDERFLAG.ZEROBOUNDSDELTASSUPPORT | ORDERFLAG.NEGOTIATEORDERSUPPORT | ORDERFLAG.SOLIDPATTERNBRUSHONLY | srv_order_flags
+			caps.append(order_cap)
 
 			# INPUT capability
-			cap = TS_INPUT_CAPABILITYSET()
+			input_cap = TS_INPUT_CAPABILITYSET()
 			srv_input = server_caps.get(CAPSTYPE.INPUT, TS_INPUT_CAPABILITYSET())
-			cap.inputFlags = getattr(srv_input, 'inputFlags', INPUT_FLAG.SCANCODES)
-			cap.keyboardLayout = getattr(srv_input, 'keyboardLayout', self.iosettings.keyboard_layout)
-			cap.keyboardType = getattr(srv_input, 'keyboardType', self.iosettings.keyboard_type)
-			cap.keyboardSubType = getattr(srv_input, 'keyboardSubType', self.iosettings.keyboard_subtype)
-			cap.keyboardFunctionKey = getattr(srv_input, 'keyboardFunctionKey', self.iosettings.keyboard_functionkey)
-			caps.append(cap)
+			input_cap.inputFlags = getattr(srv_input, 'inputFlags', INPUT_FLAG.SCANCODES)
+			input_cap.keyboardLayout = getattr(srv_input, 'keyboardLayout', self.iosettings.keyboard_layout)
+			input_cap.keyboardType = getattr(srv_input, 'keyboardType', self.iosettings.keyboard_type)
+			input_cap.keyboardSubType = getattr(srv_input, 'keyboardSubType', self.iosettings.keyboard_subtype)
+			input_cap.keyboardFunctionKey = getattr(srv_input, 'keyboardFunctionKey', self.iosettings.keyboard_functionkey)
+			caps.append(input_cap)
 
-			# Add remaining fixed capability sets
-			caps.append(TS_BITMAPCACHE_CAPABILITYSET())
-			caps.append(TS_POINTER_CAPABILITYSET())
-			caps.append(TS_BRUSH_CAPABILITYSET())
-			caps.append(TS_GLYPHCACHE_CAPABILITYSET())
-			caps.append(TS_OFFSCREEN_CAPABILITYSET())
-			caps.append(TS_VIRTUALCHANNEL_CAPABILITYSET())
-			caps.append(TS_SOUND_CAPABILITYSET())
+			# Add fixed capability sets
+			for fixed_cap in (TS_BITMAPCACHE_CAPABILITYSET, TS_POINTER_CAPABILITYSET, TS_BRUSH_CAPABILITYSET,
+							TS_GLYPHCACHE_CAPABILITYSET, TS_OFFSCREEN_CAPABILITYSET, TS_VIRTUALCHANNEL_CAPABILITYSET,
+							TS_SOUND_CAPABILITYSET):
+				caps.append(fixed_cap())
 
 			# ---------- Step 3: Send CONFIRM_ACTIVE ----------
 			share_hdr = TS_SHARECONTROLHEADER()
@@ -866,9 +923,9 @@ class RDPConnection:
 				msg.capabilitySets.append(TS_CAPS_SET.from_capability(c))
 
 			await self.handle_out_data(msg, sec_hdr, None, share_hdr, channel_id, False)
-			logger.debug("Step 3: CONFIRM_ACTIVE sent")
+			logger.debug("Step 3: CONFIRM_ACTIVE sent successfully")
 
-			# ---------- Step 4: Continue with SYNCHRONIZE, CONTROL, FONTLIST ----------
+			# ---------- Step 4: SYNCHRONIZE, CONTROL, FONTLIST ----------
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = SHARE_ID
 			data_hdr.streamID = STREAM_TYPE.MED
@@ -879,7 +936,7 @@ class RDPConnection:
 			cli_sync.targetUser = channel_id
 			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, channel_id, False)
 
-			# CONTROL COOPERATE + REQUEST_CONTROL
+			# CONTROL
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
 			for action in (CTRLACTION.COOPERATE, CTRLACTION.REQUEST_CONTROL):
 				cli_ctrl = TS_CONTROL_PDU()
@@ -897,8 +954,9 @@ class RDPConnection:
 			return True, None
 
 		except Exception as e:
-			logger.error(f"Exception in capability exchange: {e}")
+			logger.error("Exception in __handle_mandatory_capability_exchange: %s\n%s", e, traceback.format_exc())
 			return None, e
+
 
 	async def send_disconnect(self):
 		"""Sends a disconnect request to the server. This will NOT close the connection!"""
