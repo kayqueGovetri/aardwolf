@@ -706,70 +706,110 @@ class RDPConnection:
 
 	async def __send_userdata(self):
 		try:
+			# helper: encode string -> UTF-16LE null-terminated bytes
+			def _to_utf16le_null(s: str) -> bytes:
+				if s is None:
+					s = ""
+				# remove possíveis caracteres proibidos e garanta str
+				if not isinstance(s, str):
+					s = str(s)
+				return s.encode("utf-16le") + b"\x00\x00"
+
 			# ----- SYSTEMTIME dinâmico -----
 			now = datetime.now()
 			systime = TS_SYSTEMTIME()
-			systime.wYear = now.year
-			systime.wMonth = now.month
-			systime.wDayOfWeek = (now.weekday() + 1) % 7  # domingo=0
-			systime.wDay = now.day
-			systime.wHour = now.hour
-			systime.wMinute = now.minute
-			systime.wSecond = now.second
+			systime.wYear = int(now.year)
+			systime.wMonth = int(now.month)
+			systime.wDayOfWeek = int((now.weekday() + 1) % 7)  # sunday = 0 (match seu código)
+			systime.wDay = int(now.day)
+			systime.wHour = int(now.hour)
+			systime.wMinute = int(now.minute)
+			systime.wSecond = int(now.second)
 			systime.wMilliseconds = int(now.microsecond / 1000)
 
-			# ----- TIMEZONE dinâmico -----
-			offset_min = int(-datetime.now().astimezone().utcoffset().total_seconds() / 60)
-			dst_offset = int(-datetime.now().astimezone().dst().total_seconds() / 60) if datetime.now().astimezone().dst() else 0
+			# ----- TIMEZONE dinâmico (Bias em minutos, unsigned 32-bit) -----
+			tzinfo = datetime.now().astimezone()
+			utcoff = tzinfo.utcoffset() if tzinfo is not None else None
+			dst = tzinfo.dst() if tzinfo is not None else None
+
+			offset_min = int(-utcoff.total_seconds() / 60) if utcoff else 0
+			dst_offset = int(-dst.total_seconds() / 60) if (dst and dst.total_seconds() != 0) else 0
 
 			systz = TS_TIME_ZONE_INFORMATION()
+			# store as unsigned 32-bit like hardcoded (mask to 32 bits)
 			systz.Bias = offset_min & 0xFFFFFFFF
-			systz.StandardName = b'GMT Standard Time'
+			# Use UTF-16LE null-terminated strings for names (protocol expects this encoding)
+			systz.StandardName = _to_utf16le_null("GMT Standard Time")
 			systz.StandardDate = systime
 			systz.StandardBias = 0
-			systz.DaylightName = b'GMT Daylight Time'
+			systz.DaylightName = _to_utf16le_null("GMT Daylight Time")
 			systz.DaylightDate = systime
 			systz.DaylightBias = dst_offset & 0xFFFFFFFF
 
 			# ----- EXTENDED INFO -----
 			extinfo = TS_EXTENDED_INFO_PACKET()
+			# family
 			extinfo.clientAddressFamily = CLI_AF.AF_INET
 
-			# IP dinâmico: primeira interface que não seja loopback
-			extinfo.clientAddress = '10.10.10.101'
+			# clientAddress: melhor formato é UTF-16LE null-terminated (algumas impls exigem)
+			# pega ip configurado no iosettings se existir, senão usa a primeira interface conhecida
+			ip_candidate = getattr(self.iosettings, "client_ip", None) or "127.0.0.1"
+			extinfo.clientAddress = _to_utf16le_null(ip_candidate)
 
-			extinfo.clientDir = 'C:\\Windows\\System32\\mstscax.dll'
+			# clientDir: encoder UTF-16LE null-terminated (protocol expects wide string)
+			client_dir = "C:\\Windows\\System32\\mstscax.dll"
+			# se tiver uma preferência no iosettings, use-a:
+			if getattr(self.iosettings, "client_dir", None):
+				client_dir = self.iosettings.client_dir
+			extinfo.clientDir = _to_utf16le_null(client_dir)
 
 			extinfo.clientTimeZone = systz
-			extinfo.clientSessionId = 0
-			if self.iosettings.performance_flags is not None:
-				extinfo.performanceFlags = self.iosettings.performance_flags
+			extinfo.clientSessionId = int(getattr(self, "session_id", 0) or 0)
+
+			if getattr(self.iosettings, "performance_flags", None) is not None:
+				extinfo.performanceFlags = int(self.iosettings.performance_flags)
 
 			# ----- INFO PACKET -----
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
-			info.flags = INFO_FLAG.ENABLEWINDOWSKEY | INFO_FLAG.MAXIMIZESHELL | INFO_FLAG.UNICODE | INFO_FLAG.DISABLECTRLALTDEL | INFO_FLAG.MOUSE
-			info.Domain = self.credentials.domain or ''
-			info.UserName = self.credentials.username or ''
-			info.Password = self.credentials.secret or ''
-			info.AlternateShell = ''
-			info.WorkingDir = ''
+			info.flags = (
+				INFO_FLAG.ENABLEWINDOWSKEY
+				| INFO_FLAG.MAXIMIZESHELL
+				| INFO_FLAG.UNICODE
+				| INFO_FLAG.DISABLECTRLALTDEL
+				| INFO_FLAG.MOUSE
+			)
+
+			# NOTE: info.Domain/UserName/Password are usually plain strings (library will encode them),
+			# but ensure None -> empty string and strip weird chars
+			domain = (self.credentials.domain or "") if getattr(self, "credentials", None) else ""
+			username = (self.credentials.username or "") if getattr(self, "credentials", None) else ""
+			password = (self.credentials.secret or "") if getattr(self, "credentials", None) else ""
+
+			# Keep as native strings; the library's packing code typically encodes them properly.
+			info.Domain = domain
+			info.UserName = username
+			info.Password = password
+			info.AlternateShell = ""
+			info.WorkingDir = ""
 			info.extrainfo = extinfo
 
 			# ----- SECURITY HEADER -----
 			sec_hdr = TS_SECURITY_HEADER()
 			sec_hdr.flags = SEC_HDR_FLAG.INFO_PKT
-			if self.cryptolayer is not None:
+			# só setamos ENCRYPT se houver crypto layer
+			if getattr(self, "cryptolayer", None) is not None:
 				sec_hdr.flags |= SEC_HDR_FLAG.ENCRYPT
 			sec_hdr.flagsHi = 0
 
 			# ----- LOG detalhado -----
-			logger.debug("===== USERDATA =====")
-			logger.debug("Client IP: %s", extinfo.clientAddress)
-			logger.debug("Client Dir: %s", extinfo.clientDir)
+			logger.debug("===== USERDATA (normalized) =====")
+			# print hex/bytes length where aplicable to avoid binary spam in logs
+			logger.debug("Client IP (utf16le): %s", extinfo.clientAddress[:64])
+			logger.debug("Client Dir (utf16le): %s", extinfo.clientDir[:64])
 			logger.debug("TimeZone Bias: %d, DST Bias: %d", systz.Bias, systz.DaylightBias)
 			logger.debug("INFO Packet: Domain=%s, User=%s, Flags=%s", info.Domain, info.UserName, info.flags)
-			logger.debug("===================")
+			logger.debug("=================================")
 
 			# ----- SEND -----
 			await self.handle_out_data(
@@ -777,8 +817,8 @@ class RDPConnection:
 				sec_hdr,
 				None,
 				None,
-				self.__joined_channels['MCS'].channel_id,
-				False
+				self.__joined_channels["MCS"].channel_id,
+				False,
 			)
 
 			return True, None
