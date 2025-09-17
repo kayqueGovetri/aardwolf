@@ -847,27 +847,49 @@ class RDPConnection:
 			SHARE_ID = 0x103EA
 			channel_id = self.__joined_channels['MCS'].channel_id
 
+			# Inicializando valores padrão válidos
+			general_cap = TS_GENERAL_CAPABILITYSET()
+			general_cap.osMajorType = OSMAJORTYPE.WINDOWS
+			general_cap.osMinorType = OSMINORTYPE.WINDOWS_NT
+			general_cap.extraFlags = EXTRAFLAG.FASTPATH_OUTPUT_SUPPORTED | EXTRAFLAG.NO_BITMAP_COMPRESSION_HDR | EXTRAFLAG.LONG_CREDENTIALS_SUPPORTED
+
+			bitmap_cap = TS_BITMAP_CAPABILITYSET()
+			bitmap_cap.desktopWidth = self.iosettings.video_width
+			bitmap_cap.desktopHeight = self.iosettings.video_height
+			bitmap_cap.preferredBitsPerPixel = self.iosettings.video_bpp_max
+
+			order_cap = TS_ORDER_CAPABILITYSET()
+			order_cap.orderFlags = ORDERFLAG.ZEROBOUNDSDELTASSUPPORT | ORDERFLAG.NEGOTIATEORDERSUPPORT | ORDERFLAG.SOLIDPATTERNBRUSHONLY
+
+			# Outros sets podem usar defaults se não houver campos obrigatórios
+			pointer_cap = TS_POINTER_CAPABILITYSET()
+			brush_cap = TS_BRUSH_CAPABILITYSET()
+			glyph_cap = TS_GLYPHCACHE_CAPABILITYSET()
+			offscreen_cap = TS_OFFSCREEN_CAPABILITYSET()
+			vchan_cap = TS_VIRTUALCHANNEL_CAPABILITYSET()
+			sound_cap = TS_SOUND_CAPABILITYSET()
+
 			# ---------- Step 0: Send client Demand Active PDU ----------
 			demand_pdu = TS_DEMAND_ACTIVE_PDU()
 			demand_pdu.shareControlHeader = TS_SHARECONTROLHEADER()
 			demand_pdu.shareControlHeader.pduType = PDUTYPE.DEMANDACTIVEPDU
 			demand_pdu.shareID = SHARE_ID
-			demand_pdu.sourceDescriptor = b'MTSC\x00'  # mstsc style
+			demand_pdu.sourceDescriptor = b'MTSC\x00'
 			demand_pdu.pad2Octets = 0
-			demand_pdu.sessionId = 0x1000  # qualquer valor inicial válido
+			demand_pdu.sessionId = 0x1000
 
-			# Adiciona os capability sets obrigatórios
 			demand_pdu.capabilitySets.extend([
-				TS_CAPS_SET.from_capability(TS_GENERAL_CAPABILITYSET()),
-				TS_CAPS_SET.from_capability(TS_BITMAP_CAPABILITYSET()),
-				TS_CAPS_SET.from_capability(TS_ORDER_CAPABILITYSET()),
-				TS_CAPS_SET.from_capability(TS_POINTER_CAPABILITYSET()),
-				TS_CAPS_SET.from_capability(TS_BRUSH_CAPABILITYSET()),
-				TS_CAPS_SET.from_capability(TS_GLYPHCACHE_CAPABILITYSET()),
-				TS_CAPS_SET.from_capability(TS_OFFSCREEN_CAPABILITYSET()),
-				TS_CAPS_SET.from_capability(TS_VIRTUALCHANNEL_CAPABILITYSET()),
-				TS_CAPS_SET.from_capability(TS_SOUND_CAPABILITYSET()),
+				TS_CAPS_SET.from_capability(general_cap),
+				TS_CAPS_SET.from_capability(bitmap_cap),
+				TS_CAPS_SET.from_capability(order_cap),
+				TS_CAPS_SET.from_capability(pointer_cap),
+				TS_CAPS_SET.from_capability(brush_cap),
+				TS_CAPS_SET.from_capability(glyph_cap),
+				TS_CAPS_SET.from_capability(offscreen_cap),
+				TS_CAPS_SET.from_capability(vchan_cap),
+				TS_CAPS_SET.from_capability(sound_cap),
 			])
+
 
 			sec_hdr = None
 			if self.cryptolayer:
