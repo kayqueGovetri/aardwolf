@@ -444,10 +444,12 @@ class RDPConnection:
 			# Keyboard and client info
 			ud_core.keyboardLayout = self.iosettings.keyboard_layout
 			ud_core.clientBuild = 2600
-			ud_core.clientName = "aardwolf"
+			ud_core.clientName = "mstsc"
 			ud_core.imeFileName = ""
 			ud_core.clientProductId = 1
 			ud_core.serialNumber = 0
+			ud_core.keyboardLayout = self.iosettings.keyboard_layout
+			ud_core.highColorDepth = HIGH_COLOR_DEPTH.HIGH_COLOR_16BPP
 
 			# High color depth máximo
 			high_color_map = {
@@ -492,10 +494,13 @@ class RDPConnection:
 
 			# ---------- CS_NET ----------
 			ud_net = TS_UD_CS_NET()
-			for name, channel in self.__joined_channels.items():
+			default_channels = ["rdpdr", "cliprdr", "rdpsnd"]
+			for name in default_channels:
+				if name not in self.__joined_channels:
+					self.__joined_channels[name] = VCHANNEL()
 				cd = CHANNEL_DEF()
 				cd.name = name
-				cd.options = channel.options
+				cd.options = self.__joined_channels[name].options if hasattr(self.__joined_channels[name], 'options') else 0
 				ud_net.channelDefArray.append(cd)
 
 			ts_ud.userdata = {
