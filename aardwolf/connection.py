@@ -840,20 +840,49 @@ class RDPConnection:
 	async def __handle_mandatory_capability_exchange(self):
 		"""
 		Handles the mandatory RDP capability exchange with the server.
-		Sends CONFIRM_ACTIVE and initial SYNCHRONIZE, CONTROL, and FONTLIST PDUs.
-
-		Returns:
-			Tuple[bool, Exception]: True if successful, else None and the exception.
+		Sends a client-initiated DEMAND_ACTIVE PDU, then CONFIRM_ACTIVE and
+		initial SYNCHRONIZE, CONTROL, and FONTLIST PDUs.
 		"""
 		try:
 			SHARE_ID = 0x103EA
 			channel_id = self.__joined_channels['MCS'].channel_id
+
+			# ---------- Step 0: Send client Demand Active PDU ----------
+			demand_pdu = TS_DEMAND_ACTIVE_PDU()
+			demand_pdu.shareControlHeader = TS_SHARECONTROLHEADER()
+			demand_pdu.shareControlHeader.pduType = PDUTYPE.DEMAND_ACTIVE_PDU
+			demand_pdu.shareID = SHARE_ID
+			demand_pdu.sourceDescriptor = b'MTSC\x00'  # mstsc style
+			demand_pdu.pad2Octets = 0
+			demand_pdu.sessionId = 0x1000  # qualquer valor inicial válido
+
+			# Adiciona os capability sets obrigatórios
+			demand_pdu.capabilitySets.extend([
+				TS_CAPS_SET.from_capability(TS_GENERAL_CAPABILITYSET()),
+				TS_CAPS_SET.from_capability(TS_BITMAP_CAPABILITYSET()),
+				TS_CAPS_SET.from_capability(TS_ORDER_CAPABILITYSET()),
+				TS_CAPS_SET.from_capability(TS_POINTER_CAPABILITYSET()),
+				TS_CAPS_SET.from_capability(TS_BRUSH_CAPABILITYSET()),
+				TS_CAPS_SET.from_capability(TS_GLYPHCACHE_CAPABILITYSET()),
+				TS_CAPS_SET.from_capability(TS_OFFSCREEN_CAPABILITYSET()),
+				TS_CAPS_SET.from_capability(TS_VIRTUALCHANNEL_CAPABILITYSET()),
+				TS_CAPS_SET.from_capability(TS_SOUND_CAPABILITYSET()),
+			])
+
 			sec_hdr = None
 			if self.cryptolayer:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
 
+			await self.handle_out_data(
+				dataobj=demand_pdu,
+				sec_hdr=sec_hdr,
+				datacontrol_hdr=None,
+				sharecontrol_hdr=demand_pdu.shareControlHeader,
+				channel_id=channel_id,
+				is_fastpath=False
+			)
+			logger.debug("Step 0: Client Demand Active PDU sent (mstsc style)")
 			# ---------- Step 1: Receive server capability PDU ----------
 			logger.debug("Step 1: Waiting for server capability response...")
 			server_caps = {}
