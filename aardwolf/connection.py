@@ -850,7 +850,7 @@ class RDPConnection:
 			# ---------- Step 0: Send client Demand Active PDU ----------
 			demand_pdu = TS_DEMAND_ACTIVE_PDU()
 			demand_pdu.shareControlHeader = TS_SHARECONTROLHEADER()
-			demand_pdu.shareControlHeader.pduType = PDUTYPE.DEMAND_ACTIVE_PDU
+			demand_pdu.shareControlHeader.pduType = PDUTYPE.DEMANDACTIVEPDU
 			demand_pdu.shareID = SHARE_ID
 			demand_pdu.sourceDescriptor = b'MTSC\x00'  # mstsc style
 			demand_pdu.pad2Octets = 0
