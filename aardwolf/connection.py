@@ -385,11 +385,8 @@ class RDPConnection:
 
 			self.__connection.change_packetizer(CredSSPPacketizer())
 
-			try:
-				certificate = self.__connection.get_peer_certificate()
-			except Exception as e:
-				logger.warning(f"Erro ao obter certificado, prosseguindo por unsafe_ssl: {e}")
-				certificate = None
+			certificate = self.__connection.get_peer_certificate()
+
 			# credSSP auth happends here
 			token = None
 			data, to_continue, err = await self.authapi.authenticate(token, flags = None, certificate = certificate, spn=self.target.to_target_string())

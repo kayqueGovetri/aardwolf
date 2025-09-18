@@ -9,6 +9,7 @@ class CERT_CHAIN_VERSION(enum.Enum):
 	VERSION_0 = 0x00000000 # same as ver1
 	VERSION_1 = 0x00000001 #The certificate contained in the certData field is a Server Proprietary Certificate (section 2.2.1.4.3.1.1).
 	VERSION_2 = 0x00000002
+	UNKNOWN = -1  # para qualquer valor fora do esperado
 
 # https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/54e72cc6-3422-404c-a6b4-2486db125342
 class SERVER_CERTIFICATE:
@@ -33,7 +34,11 @@ class SERVER_CERTIFICATE:
 	def from_buffer(buff: io.BytesIO):
 		msg = SERVER_CERTIFICATE()
 		temp = int.from_bytes(buff.read(4), byteorder='little', signed = False)
-		msg.certChainVersion = CERT_CHAIN_VERSION((temp << 1) >> 1)
+		# Tenta mapear para enum, se falhar define UNKNOWN
+		try:
+			msg.certChainVersion = CERT_CHAIN_VERSION((temp << 1) >> 1)
+		except ValueError:
+			msg.certChainVersion = CERT_CHAIN_VERSION.UNKNOWN
 		msg.t = bool(temp >> 31)
 		if msg.certChainVersion in [CERT_CHAIN_VERSION.VERSION_1, CERT_CHAIN_VERSION.VERSION_0]:
 			msg.certificate = PROPRIETARYSERVERCERTIFICATE.from_buffer(buff)
