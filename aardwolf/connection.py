@@ -259,6 +259,8 @@ class RDPConnection:
 					self.client_x224_flags = 0
 					self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
 
+			self.client_x224_flags = 0
+			self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP
 			# Negociação com o servidor
 			connection_reply, err = await self._x224net.client_negotiate(
 				self.client_x224_flags, self.client_x224_supported_protocols
