@@ -834,11 +834,13 @@ class RDPConnection:
 	
 	async def __handle_license(self):
 		try:
+			if self.x224_protocol == SUPP_PROTOCOLS.RDP:
+				logger.debug("Plain RDP selected; skipping licensing step")
+				return True, None
 			# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/7d941d0d-d482-41c5-b728-538faa3efb31
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
 			if err is not None:
 				raise err
-			
 			res = self._t125_per_codec.decode('DomainMCSPDU', data)
 
 			# res esperado como (type, payload)
