@@ -46,10 +46,18 @@ class SERVER_CERTIFICATE:
 			msg.modulus = int.from_bytes(msg.certificate.PublicKeyBlob.modulus, byteorder='little', signed=False)
 			msg.bitlen = msg.certificate.PublicKeyBlob.bitlen
 		else:
-			msg.certificate = Certificate.load(buff.read())
-			msg.exponent = msg.certificate.public_key.native["public_key"]["public_exponent"]
-			msg.modulus = msg.certificate.public_key.native["public_key"]["modulus"]
-			msg.bitlen = msg.certificate.public_key.native["public_key"]["modulus"].bit_length()
+			if msg.certChainVersion == CERT_CHAIN_VERSION.UNKNOWN:
+				# Ignora qualquer certificado inválido
+				buff.read()  # descarta os bytes restantes
+				msg.certificate = None
+				msg.exponent = None
+				msg.modulus = None
+			else:
+				msg.bitlen = None
+				msg.certificate = Certificate.load(buff.read())
+				msg.exponent = msg.certificate.public_key.native["public_key"]["public_exponent"]
+				msg.modulus = msg.certificate.public_key.native["public_key"]["modulus"]
+				msg.bitlen = msg.certificate.public_key.native["public_key"]["modulus"].bit_length()
 
 		return msg
 	
