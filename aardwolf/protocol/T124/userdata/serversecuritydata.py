@@ -64,7 +64,9 @@ class SERVER_CERTIFICATE:
 	def encrypt(self, secret: bytes):
 		# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/761e2583-6406-4a71-bfec-cca52294c099
 		# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/6fd7c8aa-884b-4b43-b036-c86d9d6737e6 <<< little???!!!
-		
+		if self.exponent is None or self.modulus is None:
+			# unsafe_ssl -> não criptografa, só retorna o secret diretamente
+			return secret
 		temp = pow(int.from_bytes(secret, byteorder='little', signed = False), self.exponent, self.modulus)
 		return temp.to_bytes((temp.bit_length() + 7) // 8, 'little').ljust((self.bitlen // 8) + 8, b'\x00')
 
