@@ -674,7 +674,7 @@ class RDPConnection:
 				self.__channel_task[name] = asyncio.create_task(channel.run(self))
 
 			# Start the X224 reader task
-			self.__x224_reader_task = asyncio.create_task(self.__x224_reader_task())
+			self.__x224_reader_task = asyncio.create_task(self.__x224_reader())
 			logger.debug("X224 reader task started")
 
 			return True, None
@@ -1017,433 +1017,433 @@ class RDPConnection:
 			logger.error("Exception in __handle_mandatory_capability_exchange: %s\n%s", e, traceback.format_exc())
 			return None, e
 
-		async def send_disconnect(self):
-			"""Sends a disconnect request to the server. This will NOT close the connection!"""
-			try:
-				data_start_offset = 0
-				if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
-					# encryptionLevel == 1 means that server data is not encrypted. This results in this part of the negotiation 
-					# that the server sends data to the client with an empty security header (which is not documented....)
-					data_start_offset = 4
-				
-				data_hdr = TS_SHAREDATAHEADER()
-				data_hdr.shareID = 0x103EA
-				data_hdr.streamID = STREAM_TYPE.MED
-				data_hdr.pduType2 = PDUTYPE2.SHUTDOWN_REQUEST
-				
-				
-				cli_input = TS_INPUT_PDU_DATA()
-				cli_input.slowPathInputEvents.append(TS_SHUTDOWN_REQ_PDU())
+	async def send_disconnect(self):
+		"""Sends a disconnect request to the server. This will NOT close the connection!"""
+		try:
+			data_start_offset = 0
+			if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
+				# encryptionLevel == 1 means that server data is not encrypted. This results in this part of the negotiation 
+				# that the server sends data to the client with an empty security header (which is not documented....)
+				data_start_offset = 4
+			
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.SHUTDOWN_REQUEST
+			
+			
+			cli_input = TS_INPUT_PDU_DATA()
+			cli_input.slowPathInputEvents.append(TS_SHUTDOWN_REQ_PDU())
 
-				sec_hdr = None
-				if self.cryptolayer is not None:
-					sec_hdr = TS_SECURITY_HEADER()
-					sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-					sec_hdr.flagsHi = 0
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
 
-				await self.handle_out_data(cli_input, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-				data, err = await self.__joined_channels['MCS'].out_queue.get()
-				if err is not None:
-					raise err
-				
-				server_shutdown_reply = False
-				data = data[data_start_offset:]
-				shc = TS_SHARECONTROLHEADER.from_bytes(data)
-				if shc.pduType == PDUTYPE.DATAPDU:
-					shd = TS_SHAREDATAHEADER.from_bytes(data)
-					if shd.pduType2 == PDUTYPE2.SHUTDOWN_DENIED:
-						# server denied ur request
-						server_shutdown_reply = False
-					elif shd.pduType2 == PDUTYPE2.CONTROL:
-						res_control = TS_CONTROL_PDU.from_bytes(data)
-						if res_control.action == CTRLACTION.COOPERATE:
-							# server will cooperate
-							server_shutdown_reply = True
-						else:
-							# I dunno what the server is thinking
-							server_shutdown_reply = False
-
+			await self.handle_out_data(cli_input, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			data, err = await self.__joined_channels['MCS'].out_queue.get()
+			if err is not None:
+				raise err
+			
+			server_shutdown_reply = False
+			data = data[data_start_offset:]
+			shc = TS_SHARECONTROLHEADER.from_bytes(data)
+			if shc.pduType == PDUTYPE.DATAPDU:
+				shd = TS_SHAREDATAHEADER.from_bytes(data)
+				if shd.pduType2 == PDUTYPE2.SHUTDOWN_DENIED:
+					# server denied ur request
+					server_shutdown_reply = False
+				elif shd.pduType2 == PDUTYPE2.CONTROL:
+					res_control = TS_CONTROL_PDU.from_bytes(data)
+					if res_control.action == CTRLACTION.COOPERATE:
+						# server will cooperate
+						server_shutdown_reply = True
 					else:
 						# I dunno what the server is thinking
-						# Maybe we consumed the wrong packet?
 						server_shutdown_reply = False
+
 				else:
-					raise Exception('Unexpected reply! %s' % shc.pduType.name)
+					# I dunno what the server is thinking
+					# Maybe we consumed the wrong packet?
+					server_shutdown_reply = False
+			else:
+				raise Exception('Unexpected reply! %s' % shc.pduType.name)
 
-				
-				return server_shutdown_reply, None
-			except Exception as e:
-				return None, e
-
-		async def __x224_reader(self):
-			# recieves X224 packets and fastpath packets, performs decryption if necessary then dispatches each packet to 
-			# the appropriate channel
-			# gets activated when all channel setup is done
-			# dont activate it before this!!!!
 			
-			try:
-				self.__connection.packetizer.packetizer_control("X224")
-				
-				async for is_fastpath, response in self.__connection.read():
-					#is_fastpath, response, err = await self._x224net.in_queue.get()
-					#if err is not None:
-					#	raise err
+			return server_shutdown_reply, None
+		except Exception as e:
+			return None, e
 
-					if response is None:
-						raise Exception('Server terminated the connection!')
-					
-					if is_fastpath is False:
-						x = self._t125_per_codec.decode('DomainMCSPDU', response.data)
-						if x[0] != 'sendDataIndication':
-							#print('Unknown packet!')
-							continue
-						
-						data = x[1]['userData']
-						if data is not None:
-							if self.cryptolayer is not None:
-								sec_hdr = TS_SECURITY_HEADER1.from_bytes(data)
-								if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-									orig_data = data[12:]
-									data = self.cryptolayer.client_dec(orig_data)
-									if SEC_HDR_FLAG.SECURE_CHECKSUM in sec_hdr.flags:
-										mac = self.cryptolayer.calc_salted_mac(data, is_server=True)
-									else:
-										mac = self.cryptolayer.calc_mac(data)
-									if mac != sec_hdr.dataSignature:
-										print('ERROR! Signature mismatch! Printing debug data')
-										print('Encrypted data: %s' % orig_data)
-										print('Decrypted data: %s' % data)
-										print('Original MAC  : %s' % sec_hdr.dataSignature)
-										print('Calculated MAC: %s' % mac)
-						await self.__channel_id_lookup[x[1]['channelId']].process_channel_data(data)
-					else:
-						#print('fastpath data in -> %s' % len(response))
-						fpdu = TS_FP_UPDATE_PDU.from_bytes(response)
-						if FASTPATH_SEC.ENCRYPTED in fpdu.flags:
-							data = self.cryptolayer.client_dec(fpdu.fpOutputUpdates)
-							if FASTPATH_SEC.SECURE_CHECKSUM in fpdu.flags:
-								mac = self.cryptolayer.calc_salted_mac(data, is_server=True)
-							else:
-								mac = self.cryptolayer.calc_mac(data)
-							if mac != fpdu.dataSignature:
-								print('ERROR! Signature mismatch! Printing debug data')
-								print('FASTPATH_SEC  : %s' % fpdu)
-								print('Encrypted data: %s' % fpdu.fpOutputUpdates[:100])
-								print('Decrypted data: %s' % data[:100])
-								print('Original MAC  : %s' % fpdu.dataSignature)
-								print('Calculated MAC: %s' % mac)
-								raise Exception('Signature mismatch')
-							fpdu.fpOutputUpdates = TS_FP_UPDATE.from_bytes(data)
-						await self.__process_fastpath(fpdu)
+	async def __x224_reader(self):
+		# recieves X224 packets and fastpath packets, performs decryption if necessary then dispatches each packet to 
+		# the appropriate channel
+		# gets activated when all channel setup is done
+		# dont activate it before this!!!!
+		
+		try:
+			self.__connection.packetizer.packetizer_control("X224")
 			
-			except asyncio.CancelledError:
-				return None, None
-			except Exception as e:
-				logger.error(f"Error: {e}, {traceback.format_exc()}")
-				return None, e
-			finally:
-				await self.terminate()
+			async for is_fastpath, response in self.__connection.read():
+				#is_fastpath, response, err = await self._x224net.in_queue.get()
+				#if err is not None:
+				#	raise err
 
-		async def __process_fastpath(self, fpdu):
-			# Fastpath was introduced to the RDP specs to speed up data transmission
-			# by reducing 4 useless layers from the traffic.
-			# Transmission on this channel starts immediately after connection sequence
-			# mostly video and channel related info coming in from the server.
-			# interesting note: it seems newer servers (>=win2016) only support this protocol of sending
-			# high bandwith traffic. If you disable fastpath (during connection sequence) you won't
-			# get images at all
-			
-			try:
-				if fpdu.fpOutputUpdates.fragmentation != FASTPATH_FRAGMENT.SINGLE:
-					print('WARNING! FRAGMENTATION IS NOT IMPLEMENTED! %s' % fpdu.fpOutputUpdates.fragmentation)
-				if fpdu.fpOutputUpdates.updateCode == FASTPATH_UPDATETYPE.BITMAP:
-					for bitmapdata in fpdu.fpOutputUpdates.update.rectangles:
-						self.desktop_buffer_has_data = True
-						res, image = RDP_VIDEO.from_bitmapdata(bitmapdata, self.iosettings.video_out_format)
-						self.__desktop_buffer.paste(image, [res.x, res.y, res.x+res.width, res.y+res.height])
-						await self.ext_out_queue.put(res)
-				#else:
-				#	#print(fpdu.fpOutputUpdates.updateCode)
-				#	#if fpdu.fpOutputUpdates.updateCode == FASTPATH_UPDATETYPE.CACHED:
-				#	#	print(fpdu.fpOutputUpdates)
-				#	#if fpdu.fpOutputUpdates.updateCode not in [FASTPATH_UPDATETYPE.CACHED, FASTPATH_UPDATETYPE.POINTER]:
-				#	#	print('notbitmap %s' % fpdu.fpOutputUpdates.updateCode.name)
-			except Exception as e:
-				# the decoder is not perfect yet, so it's better to keep this here...
-				logger.error(f"Error: {e}, {traceback.format_exc()}")
-				return
-		
-
-
-		async def send_key_virtualkey(self, vk, is_pressed, is_extended, scancode_hint = None, modifiers = VK_MODIFIERS(0)):
-			try:
-				if vk in self.__vk_to_sc:
-					scancode = self.__vk_to_sc[vk]
-					is_extended = True
-				else:
-					scancode = scancode_hint
-				return await self.send_key_scancode(scancode, is_pressed, is_extended)
-			except Exception as e:
-				logger.error(f"Error: {e}, {traceback.format_exc()}")
-				return None, e
-		
-		async def send_key_scancode(self, scancode, is_pressed, is_extended, modifiers = VK_MODIFIERS(0)):
-			try:
-				data_hdr = TS_SHAREDATAHEADER()
-				data_hdr.shareID = 0x103EA
-				data_hdr.streamID = STREAM_TYPE.MED
-				data_hdr.pduType2 = PDUTYPE2.INPUT
+				if response is None:
+					raise Exception('Server terminated the connection!')
 				
-				kbi = TS_KEYBOARD_EVENT()
-				kbi.keyCode = scancode
-				kbi.keyboardFlags = 0
-				if is_pressed is False:
-					kbi.keyboardFlags |= KBDFLAGS.RELEASE
-				if is_extended is True or kbi.keyCode > 57000:
-					kbi.keyboardFlags |= KBDFLAGS.EXTENDED
-				clii_kb = TS_INPUT_EVENT.from_input(kbi)
-				cli_input = TS_INPUT_PDU_DATA()
-				cli_input.slowPathInputEvents.append(clii_kb)
-				
-				sec_hdr = None
-				if self.cryptolayer is not None:
-					sec_hdr = TS_SECURITY_HEADER()
-					sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-					sec_hdr.flagsHi = 0
-
-				await self.handle_out_data(cli_input, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-					
-
-			except Exception as e:
-				logger.error(f"Error: {e}, {traceback.format_exc()}")
-				return None, e
-
-		async def send_key_char(self, char, is_pressed):
-			try:
-				data_hdr = TS_SHAREDATAHEADER()
-				data_hdr.shareID = 0x103EA
-				data_hdr.streamID = STREAM_TYPE.MED
-				data_hdr.pduType2 = PDUTYPE2.INPUT
-				
-				kbi = TS_UNICODE_KEYBOARD_EVENT()
-				kbi.unicodeCode = char
-				kbi.keyboardFlags = 0
-				if is_pressed is False:
-					kbi.keyboardFlags |= KBDFLAGS.RELEASE
-				clii_kb = TS_INPUT_EVENT.from_input(kbi)
-				cli_input = TS_INPUT_PDU_DATA()
-				cli_input.slowPathInputEvents.append(clii_kb)
-
-				sec_hdr = None
-				if self.cryptolayer is not None:
-					sec_hdr = TS_SECURITY_HEADER()
-					sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-					sec_hdr.flagsHi = 0
-
-				await self.handle_out_data(cli_input, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-				return True, None
-
-			except Exception as e:
-				logger.error(f"Error: {e}, {traceback.format_exc()}")
-				return None, e
-
-		async def send_mouse(self, button:MOUSEBUTTON, xPos:int, yPos:int, is_pressed:bool, steps:int = 0):
-			try:
-				if xPos < 0 or yPos < 0:
-					return True, None
-				data_hdr = TS_SHAREDATAHEADER()
-				data_hdr.shareID = 0x103EA
-				data_hdr.streamID = STREAM_TYPE.MED
-				data_hdr.pduType2 = PDUTYPE2.INPUT
-				
-				mouse = TS_POINTER_EVENT()
-				mouse.pointerFlags = 0
-				if is_pressed is True:
-					mouse.pointerFlags |= PTRFLAGS.DOWN
-				if button == MOUSEBUTTON.MOUSEBUTTON_LEFT:
-					mouse.pointerFlags |= PTRFLAGS.BUTTON1
-				if button == MOUSEBUTTON.MOUSEBUTTON_RIGHT:
-					mouse.pointerFlags |= PTRFLAGS.BUTTON2
-				if button == MOUSEBUTTON.MOUSEBUTTON_MIDDLE:
-					mouse.pointerFlags |= PTRFLAGS.BUTTON3
-				if button == MOUSEBUTTON.MOUSEBUTTON_HOVER:
-					# indicates a simple pointer update with no buttons pressed
-					# sending this enables the mouse hover feel on the remote end
-					mouse.pointerFlags |= PTRFLAGS.MOVE
-				if button == MOUSEBUTTON.MOUSEBUTTON_WHEEL_UP:
-					mouse.pointerFlags |= PTRFLAGS.WHEEL
-					mouse.pointerFlags |= (PTRFLAGS.WheelRotationMask & steps)
-
-				if button == MOUSEBUTTON.MOUSEBUTTON_WHEEL_DOWN:
-					mouse.pointerFlags |= PTRFLAGS.WHEEL_NEGATIVE
-					mouse.pointerFlags |= (PTRFLAGS.WheelRotationMask & steps)
-
-				mouse.xPos = xPos
-				mouse.yPos = yPos
-
-				clii_mouse = TS_INPUT_EVENT.from_input(mouse)
-						
-				cli_input = TS_INPUT_PDU_DATA()
-				cli_input.slowPathInputEvents.append(clii_mouse)
-
-				sec_hdr = None
-				if self.cryptolayer is not None:
-					sec_hdr = TS_SECURITY_HEADER()
-					sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-					sec_hdr.flagsHi = 0
-
-						
-				await self.handle_out_data(cli_input, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			except Exception as e:
-				logger.error(f"Error: {e}, {traceback.format_exc()}")
-				return None, e
-
-		def get_desktop_buffer(self, encoding:VIDEO_FORMAT = VIDEO_FORMAT.PIL):
-			"""Makes a copy of the current desktop buffer, converts it and returns the object"""
-			try:
-				image = copy.deepcopy(self.__desktop_buffer)
-				if encoding == VIDEO_FORMAT.PIL:
-					return image
-				elif encoding == VIDEO_FORMAT.RAW:
-					return image.tobytes()
-				elif encoding == VIDEO_FORMAT.PNG:
-					img_byte_arr = io.BytesIO()
-					image.save(img_byte_arr, format='PNG')
-					return img_byte_arr.getvalue()
-				else:
-					raise ValueError('Output format of "%s" is not supported!' % encoding)
-			except Exception as e:
-				logger.error(f"Error: {e}, {traceback.format_exc()}")
-				return None, e
-		
-		async def get_current_clipboard_text(self):
-			if self.iosettings.clipboard is not None:
-				return await self.iosettings.clipboard.get_current_clipboard_text()
-			return None
-
-		async def set_current_clipboard_text(self, text:str):
-			if self.iosettings.clipboard is not None:
-				await self.iosettings.clipboard.set_current_clipboard_text(text)
-		
-		async def set_current_clipboard_files(self, filepaths):
-			if self.iosettings.clipboard is not None:
-				await self.iosettings.clipboard.set_current_clipboard_files(filepaths)
-
-		async def add_vchannel(self, channelname, handler):
-			if 'drdynvc' not in self.__joined_channels:
-				raise Exception('Dynamic Virtual Channels are not enabled on this connection!')
-			if channelname in self.__joined_channels['drdynvc'].defined_channels:
-				raise Exception('Channel already defined!')
-			self.__joined_channels['drdynvc'].defined_channels[channelname] = handler
-		
-		def get_vchannels(self):
-			if 'drdynvc' not in self.__joined_channels:
-				raise Exception('Dynamic Virtual Channels are not enabled on this connection!')
-			return self.__joined_channels['drdynvc'].defined_channels
-		
-		async def __external_reader(self):
-			# This coroutine handles keyboard/mouse etc input from the user
-			# It wraps the data in it's appropriate format then dispatches it to the server
-			try:
-				while True:
-					indata = await self.ext_in_queue.get()
-					if indata is None:
-						#signaling exit
-						await self.terminate()
-						return
-					if indata.type == RDPDATATYPE.KEYSCAN:
-						indata = cast(RDP_KEYBOARD_SCANCODE, indata)
-						#right side control, altgr, and pause buttons still dont work well...
-						#if indata.keyCode in [97]:
-						#	await self.send_key_virtualkey('VK_RCONTROL', indata.is_pressed, indata.is_extended, scancode_hint=indata.keyCode)
-						if indata.vk_code is not None:
-							await self.send_key_virtualkey(indata.vk_code, indata.is_pressed, indata.is_extended, scancode_hint=indata.keyCode)
-						else:
-							await self.send_key_scancode(indata.keyCode, indata.is_pressed, indata.is_extended)
-						
-					elif indata.type == RDPDATATYPE.KEYUNICODE:
-						indata = cast(RDP_KEYBOARD_UNICODE, indata)
-						await self.send_key_char(indata.char, indata.is_pressed)
-
-					elif indata.type == RDPDATATYPE.MOUSE:
-						indata = cast(RDP_MOUSE, indata)
-						await self.send_mouse(indata.button, indata.xPos, indata.yPos, indata.is_pressed)
-
-					elif indata.type == RDPDATATYPE.CLIPBOARD_DATA_TXT:
-						if 'cliprdr' not in self.__joined_channels:
-							logger.debug('Got clipboard data but no clipboard channel setup!')
-							continue
-						await self.__joined_channels['cliprdr'].process_user_data(indata)
-
-			except asyncio.CancelledError:
-				return None, None
-
-			except Exception as e:
-				logger.error(f"Error: {e}, {traceback.format_exc()}")
-				await self.terminate()
-				return None, e
-		
-		async def handle_out_data(self, dataobj, sec_hdr, datacontrol_hdr, sharecontrol_hdr, channel_id, is_fastpath):
-			try:
 				if is_fastpath is False:
-					#print('Sending data on channel "%s(%s)"' % (self.name, self.channel_id))
-					data = dataobj.to_bytes()
-					hdrs = b''
-					if sharecontrol_hdr is not None:
-						sharecontrol_hdr.pduSource = channel_id
-						sharecontrol_hdr.totalLength = len(data) + 6
-						hdrs += sharecontrol_hdr.to_bytes()
-
-					elif datacontrol_hdr is not None:
-						datacontrol_hdr.shareControlHeader = TS_SHARECONTROLHEADER()
-						datacontrol_hdr.shareControlHeader.pduType = PDUTYPE.DATAPDU
-						datacontrol_hdr.shareControlHeader.pduSource = channel_id
-						datacontrol_hdr.shareControlHeader.totalLength = len(data) + 24
-						datacontrol_hdr.uncompressedLength = len(data) + 24 # since there is no compression implemented yet
-						datacontrol_hdr.compressedType = 0
-						datacontrol_hdr.compressedLength = 0
-						hdrs += datacontrol_hdr.to_bytes()
-					if sec_hdr is not None:
-						sec_hdr = typing.cast(TS_SECURITY_HEADER, sec_hdr)
-						if self.x224_protocol == SUPP_PROTOCOLS.RDP:
-							userdata = hdrs + data
-						else:
-							#print('PacketCount: %s' % self.connection.cryptolayer.PacketCount)
-							data = hdrs+data
-								
-
-							if self.cryptolayer.use_encrypted_mac is True:
-								checksum = self.cryptolayer.calc_salted_mac(data)
-								sec_hdr.flags |= SEC_HDR_FLAG.SECURE_CHECKSUM
-							else:
-								checksum = self.cryptolayer.calc_mac(data)
-								
-							# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/9791c9e2-e5be-462f-8c23-3404c4af63b3
-							enc_data = self.cryptolayer.client_enc(data)
-								
-							data = checksum + enc_data
-							hdrs = sec_hdr.to_bytes()
-							userdata = hdrs + data
-					else:
-						userdata = hdrs + data
-					data_wrapper = {
-						'initiator': self._initiator,
-						'channelId': channel_id,
-						'dataPriority': 'high',
-						'segmentation': (b'\xc0', 2),
-						'userData': userdata
-					}
-					userdata_wrapped = self._t125_per_codec.encode('DomainMCSPDU', ('sendDataRequest', data_wrapper))
-					await self._x224net.write(userdata_wrapped)
+					x = self._t125_per_codec.decode('DomainMCSPDU', response.data)
+					if x[0] != 'sendDataIndication':
+						#print('Unknown packet!')
+						continue
 					
+					data = x[1]['userData']
+					if data is not None:
+						if self.cryptolayer is not None:
+							sec_hdr = TS_SECURITY_HEADER1.from_bytes(data)
+							if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+								orig_data = data[12:]
+								data = self.cryptolayer.client_dec(orig_data)
+								if SEC_HDR_FLAG.SECURE_CHECKSUM in sec_hdr.flags:
+									mac = self.cryptolayer.calc_salted_mac(data, is_server=True)
+								else:
+									mac = self.cryptolayer.calc_mac(data)
+								if mac != sec_hdr.dataSignature:
+									print('ERROR! Signature mismatch! Printing debug data')
+									print('Encrypted data: %s' % orig_data)
+									print('Decrypted data: %s' % data)
+									print('Original MAC  : %s' % sec_hdr.dataSignature)
+									print('Calculated MAC: %s' % mac)
+					await self.__channel_id_lookup[x[1]['channelId']].process_channel_data(data)
 				else:
-					raise NotImplementedError("Fastpath output is not yet implemented")
+					#print('fastpath data in -> %s' % len(response))
+					fpdu = TS_FP_UPDATE_PDU.from_bytes(response)
+					if FASTPATH_SEC.ENCRYPTED in fpdu.flags:
+						data = self.cryptolayer.client_dec(fpdu.fpOutputUpdates)
+						if FASTPATH_SEC.SECURE_CHECKSUM in fpdu.flags:
+							mac = self.cryptolayer.calc_salted_mac(data, is_server=True)
+						else:
+							mac = self.cryptolayer.calc_mac(data)
+						if mac != fpdu.dataSignature:
+							print('ERROR! Signature mismatch! Printing debug data')
+							print('FASTPATH_SEC  : %s' % fpdu)
+							print('Encrypted data: %s' % fpdu.fpOutputUpdates[:100])
+							print('Decrypted data: %s' % data[:100])
+							print('Original MAC  : %s' % fpdu.dataSignature)
+							print('Calculated MAC: %s' % mac)
+							raise Exception('Signature mismatch')
+						fpdu.fpOutputUpdates = TS_FP_UPDATE.from_bytes(data)
+					await self.__process_fastpath(fpdu)
+		
+		except asyncio.CancelledError:
+			return None, None
+		except Exception as e:
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			return None, e
+		finally:
+			await self.terminate()
 
-			except Exception as e:
-				logger.error(f"Error: {e}, {traceback.format_exc()}")
-				await self.terminate()
-				return None, e
+	async def __process_fastpath(self, fpdu):
+		# Fastpath was introduced to the RDP specs to speed up data transmission
+		# by reducing 4 useless layers from the traffic.
+		# Transmission on this channel starts immediately after connection sequence
+		# mostly video and channel related info coming in from the server.
+		# interesting note: it seems newer servers (>=win2016) only support this protocol of sending
+		# high bandwith traffic. If you disable fastpath (during connection sequence) you won't
+		# get images at all
+		
+		try:
+			if fpdu.fpOutputUpdates.fragmentation != FASTPATH_FRAGMENT.SINGLE:
+				print('WARNING! FRAGMENTATION IS NOT IMPLEMENTED! %s' % fpdu.fpOutputUpdates.fragmentation)
+			if fpdu.fpOutputUpdates.updateCode == FASTPATH_UPDATETYPE.BITMAP:
+				for bitmapdata in fpdu.fpOutputUpdates.update.rectangles:
+					self.desktop_buffer_has_data = True
+					res, image = RDP_VIDEO.from_bitmapdata(bitmapdata, self.iosettings.video_out_format)
+					self.__desktop_buffer.paste(image, [res.x, res.y, res.x+res.width, res.y+res.height])
+					await self.ext_out_queue.put(res)
+			#else:
+			#	#print(fpdu.fpOutputUpdates.updateCode)
+			#	#if fpdu.fpOutputUpdates.updateCode == FASTPATH_UPDATETYPE.CACHED:
+			#	#	print(fpdu.fpOutputUpdates)
+			#	#if fpdu.fpOutputUpdates.updateCode not in [FASTPATH_UPDATETYPE.CACHED, FASTPATH_UPDATETYPE.POINTER]:
+			#	#	print('notbitmap %s' % fpdu.fpOutputUpdates.updateCode.name)
+		except Exception as e:
+			# the decoder is not perfect yet, so it's better to keep this here...
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			return
+	
+
+
+	async def send_key_virtualkey(self, vk, is_pressed, is_extended, scancode_hint = None, modifiers = VK_MODIFIERS(0)):
+		try:
+			if vk in self.__vk_to_sc:
+				scancode = self.__vk_to_sc[vk]
+				is_extended = True
+			else:
+				scancode = scancode_hint
+			return await self.send_key_scancode(scancode, is_pressed, is_extended)
+		except Exception as e:
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			return None, e
+	
+	async def send_key_scancode(self, scancode, is_pressed, is_extended, modifiers = VK_MODIFIERS(0)):
+		try:
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.INPUT
 			
+			kbi = TS_KEYBOARD_EVENT()
+			kbi.keyCode = scancode
+			kbi.keyboardFlags = 0
+			if is_pressed is False:
+				kbi.keyboardFlags |= KBDFLAGS.RELEASE
+			if is_extended is True or kbi.keyCode > 57000:
+				kbi.keyboardFlags |= KBDFLAGS.EXTENDED
+			clii_kb = TS_INPUT_EVENT.from_input(kbi)
+			cli_input = TS_INPUT_PDU_DATA()
+			cli_input.slowPathInputEvents.append(clii_kb)
+			
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+
+			await self.handle_out_data(cli_input, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+				
+
+		except Exception as e:
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			return None, e
+
+	async def send_key_char(self, char, is_pressed):
+		try:
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.INPUT
+			
+			kbi = TS_UNICODE_KEYBOARD_EVENT()
+			kbi.unicodeCode = char
+			kbi.keyboardFlags = 0
+			if is_pressed is False:
+				kbi.keyboardFlags |= KBDFLAGS.RELEASE
+			clii_kb = TS_INPUT_EVENT.from_input(kbi)
+			cli_input = TS_INPUT_PDU_DATA()
+			cli_input.slowPathInputEvents.append(clii_kb)
+
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+
+			await self.handle_out_data(cli_input, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+			return True, None
+
+		except Exception as e:
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			return None, e
+
+	async def send_mouse(self, button:MOUSEBUTTON, xPos:int, yPos:int, is_pressed:bool, steps:int = 0):
+		try:
+			if xPos < 0 or yPos < 0:
+				return True, None
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.pduType2 = PDUTYPE2.INPUT
+			
+			mouse = TS_POINTER_EVENT()
+			mouse.pointerFlags = 0
+			if is_pressed is True:
+				mouse.pointerFlags |= PTRFLAGS.DOWN
+			if button == MOUSEBUTTON.MOUSEBUTTON_LEFT:
+				mouse.pointerFlags |= PTRFLAGS.BUTTON1
+			if button == MOUSEBUTTON.MOUSEBUTTON_RIGHT:
+				mouse.pointerFlags |= PTRFLAGS.BUTTON2
+			if button == MOUSEBUTTON.MOUSEBUTTON_MIDDLE:
+				mouse.pointerFlags |= PTRFLAGS.BUTTON3
+			if button == MOUSEBUTTON.MOUSEBUTTON_HOVER:
+				# indicates a simple pointer update with no buttons pressed
+				# sending this enables the mouse hover feel on the remote end
+				mouse.pointerFlags |= PTRFLAGS.MOVE
+			if button == MOUSEBUTTON.MOUSEBUTTON_WHEEL_UP:
+				mouse.pointerFlags |= PTRFLAGS.WHEEL
+				mouse.pointerFlags |= (PTRFLAGS.WheelRotationMask & steps)
+
+			if button == MOUSEBUTTON.MOUSEBUTTON_WHEEL_DOWN:
+				mouse.pointerFlags |= PTRFLAGS.WHEEL_NEGATIVE
+				mouse.pointerFlags |= (PTRFLAGS.WheelRotationMask & steps)
+
+			mouse.xPos = xPos
+			mouse.yPos = yPos
+
+			clii_mouse = TS_INPUT_EVENT.from_input(mouse)
+					
+			cli_input = TS_INPUT_PDU_DATA()
+			cli_input.slowPathInputEvents.append(clii_mouse)
+
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+
+					
+			await self.handle_out_data(cli_input, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+		except Exception as e:
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			return None, e
+
+	def get_desktop_buffer(self, encoding:VIDEO_FORMAT = VIDEO_FORMAT.PIL):
+		"""Makes a copy of the current desktop buffer, converts it and returns the object"""
+		try:
+			image = copy.deepcopy(self.__desktop_buffer)
+			if encoding == VIDEO_FORMAT.PIL:
+				return image
+			elif encoding == VIDEO_FORMAT.RAW:
+				return image.tobytes()
+			elif encoding == VIDEO_FORMAT.PNG:
+				img_byte_arr = io.BytesIO()
+				image.save(img_byte_arr, format='PNG')
+				return img_byte_arr.getvalue()
+			else:
+				raise ValueError('Output format of "%s" is not supported!' % encoding)
+		except Exception as e:
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			return None, e
+	
+	async def get_current_clipboard_text(self):
+		if self.iosettings.clipboard is not None:
+			return await self.iosettings.clipboard.get_current_clipboard_text()
+		return None
+
+	async def set_current_clipboard_text(self, text:str):
+		if self.iosettings.clipboard is not None:
+			await self.iosettings.clipboard.set_current_clipboard_text(text)
+	
+	async def set_current_clipboard_files(self, filepaths):
+		if self.iosettings.clipboard is not None:
+			await self.iosettings.clipboard.set_current_clipboard_files(filepaths)
+
+	async def add_vchannel(self, channelname, handler):
+		if 'drdynvc' not in self.__joined_channels:
+			raise Exception('Dynamic Virtual Channels are not enabled on this connection!')
+		if channelname in self.__joined_channels['drdynvc'].defined_channels:
+			raise Exception('Channel already defined!')
+		self.__joined_channels['drdynvc'].defined_channels[channelname] = handler
+	
+	def get_vchannels(self):
+		if 'drdynvc' not in self.__joined_channels:
+			raise Exception('Dynamic Virtual Channels are not enabled on this connection!')
+		return self.__joined_channels['drdynvc'].defined_channels
+	
+	async def __external_reader(self):
+		# This coroutine handles keyboard/mouse etc input from the user
+		# It wraps the data in it's appropriate format then dispatches it to the server
+		try:
+			while True:
+				indata = await self.ext_in_queue.get()
+				if indata is None:
+					#signaling exit
+					await self.terminate()
+					return
+				if indata.type == RDPDATATYPE.KEYSCAN:
+					indata = cast(RDP_KEYBOARD_SCANCODE, indata)
+					#right side control, altgr, and pause buttons still dont work well...
+					#if indata.keyCode in [97]:
+					#	await self.send_key_virtualkey('VK_RCONTROL', indata.is_pressed, indata.is_extended, scancode_hint=indata.keyCode)
+					if indata.vk_code is not None:
+						await self.send_key_virtualkey(indata.vk_code, indata.is_pressed, indata.is_extended, scancode_hint=indata.keyCode)
+					else:
+						await self.send_key_scancode(indata.keyCode, indata.is_pressed, indata.is_extended)
+					
+				elif indata.type == RDPDATATYPE.KEYUNICODE:
+					indata = cast(RDP_KEYBOARD_UNICODE, indata)
+					await self.send_key_char(indata.char, indata.is_pressed)
+
+				elif indata.type == RDPDATATYPE.MOUSE:
+					indata = cast(RDP_MOUSE, indata)
+					await self.send_mouse(indata.button, indata.xPos, indata.yPos, indata.is_pressed)
+
+				elif indata.type == RDPDATATYPE.CLIPBOARD_DATA_TXT:
+					if 'cliprdr' not in self.__joined_channels:
+						logger.debug('Got clipboard data but no clipboard channel setup!')
+						continue
+					await self.__joined_channels['cliprdr'].process_user_data(indata)
+
+		except asyncio.CancelledError:
+			return None, None
+
+		except Exception as e:
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			await self.terminate()
+			return None, e
+	
+	async def handle_out_data(self, dataobj, sec_hdr, datacontrol_hdr, sharecontrol_hdr, channel_id, is_fastpath):
+		try:
+			if is_fastpath is False:
+				#print('Sending data on channel "%s(%s)"' % (self.name, self.channel_id))
+				data = dataobj.to_bytes()
+				hdrs = b''
+				if sharecontrol_hdr is not None:
+					sharecontrol_hdr.pduSource = channel_id
+					sharecontrol_hdr.totalLength = len(data) + 6
+					hdrs += sharecontrol_hdr.to_bytes()
+
+				elif datacontrol_hdr is not None:
+					datacontrol_hdr.shareControlHeader = TS_SHARECONTROLHEADER()
+					datacontrol_hdr.shareControlHeader.pduType = PDUTYPE.DATAPDU
+					datacontrol_hdr.shareControlHeader.pduSource = channel_id
+					datacontrol_hdr.shareControlHeader.totalLength = len(data) + 24
+					datacontrol_hdr.uncompressedLength = len(data) + 24 # since there is no compression implemented yet
+					datacontrol_hdr.compressedType = 0
+					datacontrol_hdr.compressedLength = 0
+					hdrs += datacontrol_hdr.to_bytes()
+				if sec_hdr is not None:
+					sec_hdr = typing.cast(TS_SECURITY_HEADER, sec_hdr)
+					if self.x224_protocol == SUPP_PROTOCOLS.RDP:
+						userdata = hdrs + data
+					else:
+						#print('PacketCount: %s' % self.connection.cryptolayer.PacketCount)
+						data = hdrs+data
+							
+
+						if self.cryptolayer.use_encrypted_mac is True:
+							checksum = self.cryptolayer.calc_salted_mac(data)
+							sec_hdr.flags |= SEC_HDR_FLAG.SECURE_CHECKSUM
+						else:
+							checksum = self.cryptolayer.calc_mac(data)
+							
+						# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/9791c9e2-e5be-462f-8c23-3404c4af63b3
+						enc_data = self.cryptolayer.client_enc(data)
+							
+						data = checksum + enc_data
+						hdrs = sec_hdr.to_bytes()
+						userdata = hdrs + data
+				else:
+					userdata = hdrs + data
+				data_wrapper = {
+					'initiator': self._initiator,
+					'channelId': channel_id,
+					'dataPriority': 'high',
+					'segmentation': (b'\xc0', 2),
+					'userData': userdata
+				}
+				userdata_wrapped = self._t125_per_codec.encode('DomainMCSPDU', ('sendDataRequest', data_wrapper))
+				await self._x224net.write(userdata_wrapped)
+				
+			else:
+				raise NotImplementedError("Fastpath output is not yet implemented")
+
+		except Exception as e:
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			await self.terminate()
+			return None, e
+		
 
 async def amain():
 	try:
