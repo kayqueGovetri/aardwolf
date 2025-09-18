@@ -674,7 +674,7 @@ class RDPConnection:
 				self.__channel_task[name] = asyncio.create_task(channel.run(self))
 
 			# Start the X224 reader task
-			self.__x224_reader_task = asyncio.create_task(self.__x224_reader())
+			self.__x224_reader_task = asyncio.create_task(self.__x224_reader_task())
 			logger.debug("X224 reader task started")
 
 			return True, None
