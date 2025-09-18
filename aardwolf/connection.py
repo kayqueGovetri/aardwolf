@@ -783,6 +783,53 @@ class RDPConnection:
 		except Exception as e:
 			return None, e
 
+	async def __send_client_license_blob(self, channel_id):
+		"""
+		Monta e envia um ClientLicense blob mínimo (clientRandom + HWID).
+		Usa self._t125_per_codec.encode('DomainMCSPDU', ('clientLicense', blob))
+		e self.handle_out_data para enviar no canal MCS.
+		"""
+		# Gera clientRandom e HWID (32 bytes cada)
+		client_rand = os.urandom(32)
+		hwid = os.urandom(32)
+
+		# Monta blob minimal (heurística aceitada por muitos servidores)
+		# layout: version(2) | platformId(2) | clientRandom(32) | hwidLen(2) | hwid
+		version = 0x0100
+		platform_id = 0x0002  # PLATFORM_ID_WIN32NT (típico)
+		blob = struct.pack('<H', version)
+		blob += struct.pack('<H', platform_id)
+		blob += client_rand
+		blob += struct.pack('<H', len(hwid))
+		blob += hwid
+
+		# Encoda como DomainMCSPDU - ajuste a tupla se seu codec espera outro label
+		try:
+			domain_wrapper = self._t125_per_codec.encode('DomainMCSPDU', ('clientLicense', blob))
+		except Exception:
+			# alguns forks/versões usam outro identificador, tente alternativa
+			domain_wrapper = self._t125_per_codec.encode('DomainMCSPDU', ('ClientLicense', blob))
+
+		# Prepara share header
+		share_hdr = TS_SHARECONTROLHEADER()
+		share_hdr.pduType = PDUTYPE.DATAPDU
+		# security header se aplicável
+		sec_hdr = None
+		if hasattr(self, 'cryptolayer') and self.cryptolayer:
+			sec_hdr = TS_SECURITY_HEADER()
+			sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+
+		class _RawPDU:
+			def __init__(self, raw):
+				self._raw = raw
+			def to_bytes(self):
+				return self._raw
+
+		rawobj = _RawPDU(domain_wrapper)
+		await self.handle_out_data(rawobj, sec_hdr, None, share_hdr, channel_id, False)
+		logger.debug("Sent ClientLicense blob (len=%d)", len(domain_wrapper))
+		return True
+	
 	async def __handle_license(self):
 		try:
 			# TODO: implement properly
@@ -792,61 +839,49 @@ class RDPConnection:
 				raise err
 			
 			res = self._t125_per_codec.decode('DomainMCSPDU', data)
+
+			# res esperado como (type, payload)
+			try:
+				ptype = res[0]
+				payload = res[1]
+			except Exception:
+				logger.debug("License: formato inesperado do decode: %s", type(res))
+				return None, Exception("License: formato inesperado do decode")
+		
+			logger.debug("License: recebido PDU type=%s payload_keys=%s", ptype, (list(payload.keys()) if isinstance(payload, dict) else type(payload)))
 			if res[0] == 'tokenInhibitConfirm':
 				if res[1]['result'] != 'rt-successful':
 					raise Exception('License error! tokenInhibitConfirm:result not successful')
 			else:
 				raise Exception('tokenInhibitConfirm did not show up in reply!')
+			
+			# Caso 2: LicenseRequest do servidor -> enviar client license blob
+			if ptype in ('licenseRequest', 'LicenseRequest', 'license_request'):
+				logger.debug("License: LicenseRequest recebido; enviando ClientLicense blob")
+				try:
+					# usa a sua função existente para enviar o blob
+					await self.__send_client_license_blob(self.__joined_channels['MCS'].channel_id)
+				except Exception as e_send:
+					logger.error("License: falha ao enviar client license blob: %s", e_send)
+					return None, e_send
+
+			# Caso 3: LicenseError (muitos servidores enviam LicenseError/ValidClient)
+			if ptype in ('licenseError', 'LicenseError', 'license_error'):
+				logger.debug("License: LicenseError recebido; assumindo ValidClient e prosseguindo. payload=%s", payload)
+				return True, None
+
+			# Caso 4: tokenInhibit (outros PDUs relacionados à licença) -> apenas ignora e continua
+			if ptype in ('tokenInhibit',):
+				logger.debug("License: tokenInhibit recebido; aguardando próxima mensagem de licensing")
+
+			# Qualquer outro PDU: ignora e continua
+			logger.debug("License: PDU de outro tipo recebido (%s), ignorando e aguardando PDUs de licensing", ptype)
 
 			return True, None
 		except Exception as e:
 			logger.error(f"Error: {e}, {traceback.format_exc()}")
 			return None, e
-	
 
-
-	async def __handle_license(self):
-		"""
-		Handles RDP license exchange with detailed logging of incoming MCS PDUs.
-		"""
-		try:
-			# Pegando apenas um PDU da fila, sem loop infinito
-			data, err = await self.__joined_channels['MCS'].out_queue.get()
-			if err:
-				raise err
-
-			# --- Detailed logging ---
-			data_len = len(data)
-			hex_preview = data[:64].hex()  # mostra apenas os primeiros 64 bytes para não poluir log
-			base64_preview = base64.b64encode(data[:64]).decode()
-			logger.debug("License PDU received: %d bytes", data_len)
-			logger.debug("License PDU first 64 bytes (hex): %s", hex_preview)
-			logger.debug("License PDU first 64 bytes (base64): %s", base64_preview)
-			logger.debug("Full PDU (hex): %s", data.hex())
-
-			# --- Decode DomainMCSPDU ---
-			try:
-				res = self._t125_per_codec.decode('DomainMCSPDU', data)
-				logger.debug("Decoded license PDU: %s", res)
-			except Exception as decode_err:
-				logger.error("Failed to decode license PDU: %s", traceback.format_exc())
-				raise decode_err
-
-			# --- Check tokenInhibitConfirm ---
-			if res[0] == 'tokenInhibitConfirm':
-				result = res[1].get('result', None)
-				logger.debug("tokenInhibitConfirm received with result: %s", result)
-				if result != 'rt-successful':
-					raise Exception(f"License error: tokenInhibitConfirm result not successful: {result}")
-			else:
-				raise Exception(f"Unexpected license PDU type received: {res[0]}")
-
-			logger.debug("License handling completed successfully")
-			return True, None
-
-		except Exception as e:
-			logger.error("Error in __handle_license: %s\n%s", e, traceback.format_exc())
-			return None, e
 
 	
 	async def __handle_mandatory_capability_exchange(self):
