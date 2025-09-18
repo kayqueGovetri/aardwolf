@@ -1079,10 +1079,20 @@ class RDPConnection:
 		try:
 			self.__connection.packetizer.packetizer_control("X224")
 			
-			async for is_fastpath, response in self.__connection.read():
-				if response is None:
-					raise Exception('Server terminated the connection!')
-				
+			async for packet in self.__connection.read():
+				if packet is None:
+					self.logger.debug(
+						f"[RDP] read() retornou None — provavelmente o servidor fechou a conexão.\n"
+					)
+					break
+				try:
+					is_fastpath, response = packet
+				except Exception as e:
+					self.logger.error(
+						f"[RDP] Erro ao desempacotar pacote: {e}\n"
+						f"-> Packet bruto recebido: {packet}\n"
+					)
+					continue
 				if not is_fastpath:
 					x = self._t125_per_codec.decode('DomainMCSPDU', response.data)
 					if not x:
