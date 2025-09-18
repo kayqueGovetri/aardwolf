@@ -38,7 +38,7 @@ class RDPTarget(UniTarget):
 			domain:str = None, 
 			proxies:List[UniProxyTarget] = None, 
 			protocol:UniProto = UniProto.CLIENT_TCP, 
-			unsafe_ssl:bool = False,
+			unsafe_ssl:bool = True,
 			dialect:RDPConnectionDialect = RDPConnectionDialect.RDP,
 			dns:str = None):
 		UniTarget.__init__(self, ip, port, protocol, timeout, hostname = hostname, proxies = proxies, domain = domain, dc_ip = dc_ip, dns=dns)
