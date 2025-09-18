@@ -1076,31 +1076,26 @@ class RDPConnection:
 			return None, e
 
 	async def __x224_reader(self):
-		# recieves X224 packets and fastpath packets, performs decryption if necessary then dispatches each packet to 
-		# the appropriate channel
-		# gets activated when all channel setup is done
-		# dont activate it before this!!!!
-		
 		try:
 			self.__connection.packetizer.packetizer_control("X224")
 			
 			async for is_fastpath, response in self.__connection.read():
-				#is_fastpath, response, err = await self._x224net.in_queue.get()
-				#if err is not None:
-				#	raise err
-
 				if response is None:
 					raise Exception('Server terminated the connection!')
 				
-				if is_fastpath is False:
+				if not is_fastpath:
 					x = self._t125_per_codec.decode('DomainMCSPDU', response.data)
 					if x[0] != 'sendDataIndication':
-						#print('Unknown packet!')
 						continue
 					
 					data = x[1]['userData']
-					if data is not None:
-						if self.cryptolayer is not None:
+					if data is not None and self.cryptolayer is not None:
+						# RDP plain: ignorar decrypt/MAC
+						if self.x224_protocol == SUPP_PROTOCOLS.RDP:  # flag que você define
+							# Apenas descarta TS_SECURITY_HEADER se presente
+							if len(data) > 12:
+								data = data[12:]
+						else:
 							sec_hdr = TS_SECURITY_HEADER1.from_bytes(data)
 							if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
 								orig_data = data[12:]
@@ -1115,27 +1110,28 @@ class RDPConnection:
 									print('Decrypted data: %s' % data)
 									print('Original MAC  : %s' % sec_hdr.dataSignature)
 									print('Calculated MAC: %s' % mac)
+
 					await self.__channel_id_lookup[x[1]['channelId']].process_channel_data(data)
+
 				else:
-					#print('fastpath data in -> %s' % len(response))
 					fpdu = TS_FP_UPDATE_PDU.from_bytes(response)
 					if FASTPATH_SEC.ENCRYPTED in fpdu.flags:
-						data = self.cryptolayer.client_dec(fpdu.fpOutputUpdates)
-						if FASTPATH_SEC.SECURE_CHECKSUM in fpdu.flags:
-							mac = self.cryptolayer.calc_salted_mac(data, is_server=True)
+						if not self.x224_protocol == SUPP_PROTOCOLS.RDP:
+							data = self.cryptolayer.client_dec(fpdu.fpOutputUpdates)
+							if FASTPATH_SEC.SECURE_CHECKSUM in fpdu.flags:
+								mac = self.cryptolayer.calc_salted_mac(data, is_server=True)
+							else:
+								mac = self.cryptolayer.calc_mac(data)
+							if mac != fpdu.dataSignature:
+								print('ERROR! Signature mismatch! Printing debug data')
+								raise Exception('Signature mismatch')
+							fpdu.fpOutputUpdates = TS_FP_UPDATE.from_bytes(data)
 						else:
-							mac = self.cryptolayer.calc_mac(data)
-						if mac != fpdu.dataSignature:
-							print('ERROR! Signature mismatch! Printing debug data')
-							print('FASTPATH_SEC  : %s' % fpdu)
-							print('Encrypted data: %s' % fpdu.fpOutputUpdates[:100])
-							print('Decrypted data: %s' % data[:100])
-							print('Original MAC  : %s' % fpdu.dataSignature)
-							print('Calculated MAC: %s' % mac)
-							raise Exception('Signature mismatch')
-						fpdu.fpOutputUpdates = TS_FP_UPDATE.from_bytes(data)
+							# plain: ignorar criptografia
+							fpdu.fpOutputUpdates = TS_FP_UPDATE.from_bytes(fpdu.fpOutputUpdates)
+					
 					await self.__process_fastpath(fpdu)
-		
+
 		except asyncio.CancelledError:
 			return None, None
 		except Exception as e:
