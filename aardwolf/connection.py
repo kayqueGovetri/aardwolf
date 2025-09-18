@@ -1081,14 +1081,14 @@ class RDPConnection:
 			
 			async for packet in self.__connection.read():
 				if packet is None:
-					self.logger.debug(
+					logger.debug(
 						f"[RDP] read() retornou None — provavelmente o servidor fechou a conexão.\n"
 					)
 					break
 				try:
 					is_fastpath, response = packet
 				except Exception as e:
-					self.logger.error(
+					logger.error(
 						f"[RDP] Erro ao desempacotar pacote: {e}\n"
 						f"-> Packet bruto recebido: {packet}\n"
 					)
