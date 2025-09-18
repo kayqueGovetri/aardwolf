@@ -281,14 +281,14 @@ class RDPConnection:
 
 				# Configurar SSL se necessário
 				# if self.x224_protocol & (SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID | SUPP_PROTOCOLS.HYBRID_EX):
-				ssl_ctx = None
-				if self.target.unsafe_ssl:
-					ssl_ctx = ssl.create_default_context()
-					ssl_ctx.check_hostname = False
-					ssl_ctx.verify_mode = ssl.CERT_NONE
-					ssl_ctx.set_ciphers("ALL:@SECLEVEL=0")
-					logger.warning("Unsafe SSL enabled, skipping certificate verification")
-				await self.__connection.wrap_ssl(ssl_ctx=ssl_ctx)
+				# ssl_ctx = None
+				# if self.target.unsafe_ssl:
+				# 	ssl_ctx = ssl.create_default_context()
+				# 	ssl_ctx.check_hostname = False
+				# 	ssl_ctx.verify_mode = ssl.CERT_NONE
+				# 	ssl_ctx.set_ciphers("ALL:@SECLEVEL=0")
+				# 	logger.warning("Unsafe SSL enabled, skipping certificate verification")
+				# await self.__connection.wrap_ssl(ssl_ctx=ssl_ctx)
 				logger.debug("SSL wrapped over TCP connection")
 
 				# CredSSP se HYBRID/HYBRID_EX
