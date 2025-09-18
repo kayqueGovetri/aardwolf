@@ -240,24 +240,24 @@ class RDPConnection:
 			self._x224net = X224Network(self.__connection)
 			logger.debug("X224 network initialized")
 
-			# Definir protocolos e flags de acordo com as credenciais e tipo de autenticação
-			if self.client_x224_supported_protocols is None and self.credentials is not None:
-				if self.credentials.protocol in [asyauthProtocol.NTLM, asyauthProtocol.KERBEROS]:
-					if self.credentials.secret and self.credentials.stype not in [
-						asyauthSecret.PASSWORD, asyauthSecret.PWPROMPT, asyauthSecret.PWHEX, asyauthSecret.PWB64
-					]:
-						self.client_x224_flags = 0
-						self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID
-						logger.debug("Restricted Admin Mode required for non-password secret")
-					else:
-						self.client_x224_flags = 0
-						self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID_EX | SUPP_PROTOCOLS.HYBRID
-				elif self.credentials.stype == asyauthSecret.NONE:
-					self.client_x224_flags = 0
-					self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
-				else:
-					self.client_x224_flags = 0
-					self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
+			# # Definir protocolos e flags de acordo com as credenciais e tipo de autenticação
+			# if self.client_x224_supported_protocols is None and self.credentials is not None:
+			# 	if self.credentials.protocol in [asyauthProtocol.NTLM, asyauthProtocol.KERBEROS]:
+			# 		if self.credentials.secret and self.credentials.stype not in [
+			# 			asyauthSecret.PASSWORD, asyauthSecret.PWPROMPT, asyauthSecret.PWHEX, asyauthSecret.PWB64
+			# 		]:
+			# 			self.client_x224_flags = 0
+			# 			self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID
+			# 			logger.debug("Restricted Admin Mode required for non-password secret")
+			# 		else:
+			# 			self.client_x224_flags = 0
+			# 			self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID_EX | SUPP_PROTOCOLS.HYBRID
+			# 	elif self.credentials.stype == asyauthSecret.NONE:
+			# 		self.client_x224_flags = 0
+			# 		self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
+			# 	else:
+			# 		self.client_x224_flags = 0
+			# 		self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL
 
 			self.client_x224_flags = 0
 			self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP
@@ -280,26 +280,26 @@ class RDPConnection:
 				logger.debug("Server RDP_NEG_RSP detail: %s", self.x224_connection_reply.__dict__)
 
 				# Configurar SSL se necessário
-				if self.x224_protocol & (SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID | SUPP_PROTOCOLS.HYBRID_EX):
-					ssl_ctx = None
-					if self.target.unsafe_ssl:
-						ssl_ctx = ssl.create_default_context()
-						ssl_ctx.check_hostname = False
-						ssl_ctx.verify_mode = ssl.CERT_NONE
-						ssl_ctx.set_ciphers("ALL:@SECLEVEL=0")
-						logger.warning("Unsafe SSL enabled, skipping certificate verification")
-					await self.__connection.wrap_ssl(ssl_ctx=ssl_ctx)
-					logger.debug("SSL wrapped over TCP connection")
+				# if self.x224_protocol & (SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID | SUPP_PROTOCOLS.HYBRID_EX):
+				ssl_ctx = None
+				if self.target.unsafe_ssl:
+					ssl_ctx = ssl.create_default_context()
+					ssl_ctx.check_hostname = False
+					ssl_ctx.verify_mode = ssl.CERT_NONE
+					ssl_ctx.set_ciphers("ALL:@SECLEVEL=0")
+					logger.warning("Unsafe SSL enabled, skipping certificate verification")
+				await self.__connection.wrap_ssl(ssl_ctx=ssl_ctx)
+				logger.debug("SSL wrapped over TCP connection")
 
 				# CredSSP se HYBRID/HYBRID_EX
-				if self.x224_protocol & (SUPP_PROTOCOLS.HYBRID | SUPP_PROTOCOLS.HYBRID_EX):
-					logger.debug("Starting CredSSP authentication...")
-					_, err = await self.credssp_auth()
-					if err:
-						logger.error("CredSSP authentication failed: %s", err)
-						raise err
-					self.__connection.change_packetizer(TPKTPacketizer())
-					logger.debug("CredSSP authentication completed")
+				# if self.x224_protocol & (SUPP_PROTOCOLS.HYBRID | SUPP_PROTOCOLS.HYBRID_EX):
+				# 	logger.debug("Starting CredSSP authentication...")
+				# 	_, err = await self.credssp_auth()
+				# 	if err:
+				# 		logger.error("CredSSP authentication failed: %s", err)
+				# 		raise err
+				# 	self.__connection.change_packetizer(TPKTPacketizer())
+				# 	logger.debug("CredSSP authentication completed")
 			else:
 				# Protocolo antigo RDP
 				self.x224_protocol = SUPP_PROTOCOLS.RDP
