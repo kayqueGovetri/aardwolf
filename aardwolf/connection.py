@@ -1406,7 +1406,9 @@ class RDPConnection:
 					hdrs += datacontrol_hdr.to_bytes()
 				if sec_hdr is not None:
 					sec_hdr = typing.cast(TS_SECURITY_HEADER, sec_hdr)
-					if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+					if self.x224_protocol == SUPP_PROTOCOLS.RDP:
+						userdata = hdrs + data
+					else:
 						#print('PacketCount: %s' % self.connection.cryptolayer.PacketCount)
 						data = hdrs+data
 							
@@ -1422,9 +1424,9 @@ class RDPConnection:
 							
 						data = checksum + enc_data
 						hdrs = sec_hdr.to_bytes()
-					else:
-						hdrs += sec_hdr.to_bytes()
-				userdata = hdrs + data
+						userdata = hdrs + data
+				else:
+					userdata = hdrs + data
 				data_wrapper = {
 					'initiator': self._initiator,
 					'channelId': channel_id,
