@@ -1085,6 +1085,10 @@ class RDPConnection:
 				
 				if not is_fastpath:
 					x = self._t125_per_codec.decode('DomainMCSPDU', response.data)
+					if not x:
+						logger.debug("Ignorando pacote MCS vazio/unknown")
+						continue
+				
 					if x[0] != 'sendDataIndication':
 						continue
 					
