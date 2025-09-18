@@ -832,7 +832,6 @@ class RDPConnection:
 	
 	async def __handle_license(self):
 		try:
-			# TODO: implement properly
 			# https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/7d941d0d-d482-41c5-b728-538faa3efb31
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
 			if err is not None:
@@ -842,47 +841,47 @@ class RDPConnection:
 
 			# res esperado como (type, payload)
 			try:
-				ptype = res[0]
+				ptype = str(res[0]).lower()
 				payload = res[1]
 			except Exception:
 				logger.debug("License: formato inesperado do decode: %s", type(res))
 				return None, Exception("License: formato inesperado do decode")
 		
 			logger.debug("License: recebido PDU type=%s payload_keys=%s", ptype, (list(payload.keys()) if isinstance(payload, dict) else type(payload)))
-			if res[0] == 'tokenInhibitConfirm':
-				if res[1]['result'] != 'rt-successful':
+
+			# Caso 1: tokenInhibitConfirm
+			if ptype == 'tokeninhibitconfirm':
+				if payload.get('result') != 'rt-successful':
 					raise Exception('License error! tokenInhibitConfirm:result not successful')
-			else:
-				raise Exception('tokenInhibitConfirm did not show up in reply!')
-			
-			# Caso 2: LicenseRequest do servidor -> enviar client license blob
-			if ptype in ('licenseRequest', 'LicenseRequest', 'license_request'):
+				logger.debug("License: tokenInhibitConfirm bem-sucedido, prosseguindo.")
+				return True, None
+
+			# Caso 2: LicenseRequest -> enviar client license blob
+			elif ptype in ('licenserequest', 'license_request'):
 				logger.debug("License: LicenseRequest recebido; enviando ClientLicense blob")
 				try:
-					# usa a sua função existente para enviar o blob
 					await self.__send_client_license_blob(self.__joined_channels['MCS'].channel_id)
 				except Exception as e_send:
 					logger.error("License: falha ao enviar client license blob: %s", e_send)
 					return None, e_send
 
-			# Caso 3: LicenseError (muitos servidores enviam LicenseError/ValidClient)
-			if ptype in ('licenseError', 'LicenseError', 'license_error'):
+			# Caso 3: LicenseError -> assume ValidClient
+			elif ptype in ('licenseerror', 'license_error'):
 				logger.debug("License: LicenseError recebido; assumindo ValidClient e prosseguindo. payload=%s", payload)
 				return True, None
 
-			# Caso 4: tokenInhibit (outros PDUs relacionados à licença) -> apenas ignora e continua
-			if ptype in ('tokenInhibit',):
+			# Caso 4: tokenInhibit
+			elif ptype == 'tokeninhibit':
 				logger.debug("License: tokenInhibit recebido; aguardando próxima mensagem de licensing")
 
-			# Qualquer outro PDU: ignora e continua
-			logger.debug("License: PDU de outro tipo recebido (%s), ignorando e aguardando PDUs de licensing", ptype)
+			# Qualquer outro PDU
+			else:
+				logger.debug("License: PDU de outro tipo recebido (%s), ignorando", ptype)
 
 			return True, None
 		except Exception as e:
 			logger.error(f"Error: {e}, {traceback.format_exc()}")
 			return None, e
-
-
 	
 	async def __handle_mandatory_capability_exchange(self):
 		"""
