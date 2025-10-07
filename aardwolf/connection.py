@@ -820,18 +820,29 @@ class RDPConnection:
 						
 						found_offset = None
 						# Procurar pelo padrão do SHARECONTROLHEADER
-						# Testar offsets comuns: 0, 4, 8, 12, 16, 20, 24, 28, 32
-						for offset in [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40]:
+						# Testar offsets comuns e validar totalLength
+						for offset in [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48]:
 							try:
 								if offset >= len(remaining):
 									break
 								shc = TS_SHARECONTROLHEADER.from_bytes(remaining[offset:])
-								print(f'✅ SHARECONTROLHEADER encontrado no offset {offset}')
-								print(f'   pduType: {shc.pduType.name}')
+								
+								# Validar se o totalLength é razoável (entre 100 e tamanho dos dados)
+								if shc.totalLength < 100 or shc.totalLength > len(remaining):
+									print(f'⚠️ Offset {offset}: totalLength inválido ({shc.totalLength})')
+									continue
+								
+								# Validar se é DEMANDACTIVEPDU
+								if shc.pduType != PDUTYPE.DEMANDACTIVEPDU:
+									print(f'⚠️ Offset {offset}: {shc.pduType.name} (esperado DEMANDACTIVEPDU)')
+									continue
+								
+								print(f'✅ DEMANDACTIVEPDU válido no offset {offset}')
 								print(f'   totalLength: {shc.totalLength}')
+								print(f'   shareID: 0x{shc.shareID:08x}')
 								found_offset = offset
 								break
-							except:
+							except Exception as e:
 								continue
 						
 						if found_offset is not None:
@@ -850,119 +861,7 @@ class RDPConnection:
 		except Exception as e:
 			logger.error(f"Error: {e}, {traceback.format_exc()}")
 			return None, e
-		try:
-			print('\n===== HANDLE LICENSE =====')
-			
-			data, err = await asyncio.wait_for(
-				self.__joined_channels['MCS'].out_queue.get(),
-				timeout=5
-			)
-			if err is not None:
-				raise err
 
-			print(f'📦 Recebido {len(data)} bytes TOTAL')
-			
-			# Decodificar o MCS PDU
-			res = self._t125_per_codec.decode('DomainMCSPDU', data)
-			print(f'📋 DomainMCSPDU tipo: {res[0]}')
-			
-			if res[0] == 'tokenInhibitConfirm':
-				print('✅ tokenInhibitConfirm recebido')
-				if res[1]['result'] != 'rt-successful':
-					raise Exception('License error! tokenInhibitConfirm:result not successful')
-				
-				# Calcular tamanho do tokenInhibitConfirm
-				encoded = self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1]))
-				encoded_size = len(encoded)
-				remaining = data[encoded_size:]
-				
-				print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
-				print(f'📏 Dados extras: {len(remaining)} bytes')
-				
-				if len(remaining) > 10:
-					print(f'\n⚠️ Há {len(remaining)} bytes extras!')
-					print(f'📝 Hex (40 primeiros): {remaining[:40].hex()}')
-					
-					# TENTAR DECODIFICAR COMO sendDataIndication (igual ao __x224_reader)
-					try:
-						print('\n🔍 Tentando decodificar como sendDataIndication...')
-						extra_pdu = self._t125_per_codec.decode('DomainMCSPDU', remaining)
-						print(f'✅ Tipo: {extra_pdu[0]}')
-						
-						if extra_pdu[0] == 'sendDataIndication':
-							print('✅ É sendDataIndication!')
-							user_data = extra_pdu[1]['userData']
-							print(f'📦 userData: {len(user_data)} bytes')
-							print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
-							
-							# DESCRIPTOGRAFAR SE NECESSÁRIO (igual ao __x224_reader)
-							if self.cryptolayer is not None:
-								from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
-								
-								try:
-									sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-									print(f'🔐 Security flags: {sec_hdr.flags}')
-									
-									if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-										print('🔓 Descriptografando...')
-										orig_data = user_data[12:]  # Pula security header
-										decrypted = self.cryptolayer.client_dec(orig_data)
-										print(f'✅ Descriptografado: {len(decrypted)} bytes')
-										print(f'📝 Hex (40 primeiros): {decrypted[:40].hex()}')
-										
-										# TENTAR PARSEAR COMO TS_SHARECONTROLHEADER
-										from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
-										
-										# Testar offset 0
-										try:
-											shc = TS_SHARECONTROLHEADER.from_bytes(decrypted)
-											print(f'\n✅✅✅ ENCONTRADO: pduType = {shc.pduType.name}')
-											
-											if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-												print('🎉🎉🎉 É DEMANDACTIVEPDU!')
-												print('🔄 Recolocando dados descriptografados na fila...')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-											else:
-												print(f'⚠️ Não é DEMANDACTIVEPDU, é {shc.pduType.name}')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-										except Exception as e:
-											print(f'❌ Erro parse com offset 0: {e}')
-											# Tentar offset 4
-											try:
-												shc = TS_SHARECONTROLHEADER.from_bytes(decrypted[4:])
-												print(f'\n✅✅✅ ENCONTRADO (offset 4): pduType = {shc.pduType.name}')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted[4:], None))
-											except Exception as e2:
-												print(f'❌ Erro parse com offset 4: {e2}')
-												print('⚠️ Recolocando dados brutos...')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-									else:
-										print('⚠️ Dados não criptografados')
-										await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-								except Exception as e:
-									print(f'❌ Erro ao processar security header: {e}')
-									await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-							else:
-								print('⚠️ Sem cryptolayer')
-								await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-						else:
-							print(f'⚠️ Não é sendDataIndication, é {extra_pdu[0]}')
-							await self.__joined_channels['MCS'].out_queue.put((remaining, None))
-							
-					except Exception as e:
-						print(f'❌ Erro ao decodificar extras: {e}')
-						print('⚠️ Recolocando dados brutos...')
-						await self.__joined_channels['MCS'].out_queue.put((remaining, None))
-
-			print('\n✅ License handling concluído\n')
-			return True, None
-			
-		except asyncio.TimeoutError:
-			print('⏱ Timeout aguardando licenciamento')
-			return True, None
-		except Exception as e:
-			logger.error(f"Error: {e}, {traceback.format_exc()}")
-			return None, e
 	async def __handle_mandatory_capability_exchange(self):
 		try:
 			print('\n===== AGUARDANDO DEMANDACTIVEPDU =====')
