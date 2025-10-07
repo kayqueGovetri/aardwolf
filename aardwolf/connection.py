@@ -866,7 +866,7 @@ class RDPConnection:
 		try:
 			print('\n📤 Enviando CLIENT_INFO_PDU...')
 			from aardwolf.protocol.T128.security import TS_SECURITY_HEADER
-			from aardwolf.protocol.T128.clientinfo import TS_INFO_PACKET
+			from aardwolf.protocol.T125.infopacket import TS_INFO_PACKET
 			
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
