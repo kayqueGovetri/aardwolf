@@ -477,7 +477,7 @@ class RDPConnection:
 				elif sc == 32:
 					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_32BPP_SUPPORT
 			
-			# ud_core.earlyCapabilityFlags = RNS_UD_CS.SUPPORT_ERRINFO_PDU
+			ud_core.earlyCapabilityFlags = RNS_UD_CS.SUPPORT_ERRINFO_PDU
 			ud_core.clientDigProductId = b'\x00' * 64
 			ud_core.connectionType = CONNECTION_TYPE.UNK
 			ud_core.pad1octet = b'\x00'
