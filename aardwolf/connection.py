@@ -484,8 +484,13 @@ class RDPConnection:
 			ud_core.serverSelectedProtocol = self.x224_protocol
 			
 			ud_sec = TS_UD_CS_SEC()
-			ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH if self.x224_protocol is not SUPP_PROTOCOLS.RDP else ENCRYPTION_FLAG.BIT_128
-			ud_sec.extEncryptionMethods = ENCRYPTION_FLAG.FRENCH
+			# FORÇAR NENHUMA ENCRYPTION quando usar SSL/TLS
+			if self.x224_protocol in [SUPP_PROTOCOLS.SSL, SUPP_PROTOCOLS.HYBRID, SUPP_PROTOCOLS.HYBRID_EX]:
+				ud_sec.encryptionMethods = 0  # Sem RDP encryption
+				ud_sec.extEncryptionMethods = 0  # Sem extended encryption
+			else:
+				ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH if self.x224_protocol is not SUPP_PROTOCOLS.RDP else ENCRYPTION_FLAG.BIT_128
+				ud_sec.extEncryptionMethods = ENCRYPTION_FLAG.FRENCH
 
 			ud_clust = TS_UD_CS_CLUSTER()
 			ud_clust.RedirectedSessionID = 0
