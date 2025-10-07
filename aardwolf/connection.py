@@ -750,7 +750,7 @@ class RDPConnection:
 
 			print(f'📦 Recebido {len(data)} bytes TOTAL')
 			
-			# Decodificar o MCS PDU
+			# Decodificar tokenInhibitConfirm
 			res = self._t125_per_codec.decode('DomainMCSPDU', data)
 			print(f'📋 DomainMCSPDU tipo: {res[0]}')
 			
@@ -768,78 +768,52 @@ class RDPConnection:
 				print(f'📏 Dados extras: {len(remaining)} bytes')
 				
 				if len(remaining) > 10:
-					print(f'\n⚠️ Há {len(remaining)} bytes extras!')
+					print(f'\n⚠️ Há {len(remaining)} bytes extras (userData criptografado)!')
 					print(f'📝 Hex (40 primeiros): {remaining[:40].hex()}')
 					
-					# TENTAR DECODIFICAR COMO sendDataIndication (igual ao __x224_reader)
-					try:
-						print('\n🔍 Tentando decodificar como sendDataIndication...')
-						extra_pdu = self._t125_per_codec.decode('DomainMCSPDU', remaining)
-						print(f'✅ Tipo: {extra_pdu[0]}')
+					# PROCESSAR COMO userData (igual ao __x224_reader linha 1178-1195)
+					user_data = remaining
+					
+					if self.cryptolayer is not None:
+						print('🔓 Descriptografando userData...')
+						sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
+						print(f'🔐 Security flags: {sec_hdr.flags}')
 						
-						if extra_pdu[0] == 'sendDataIndication':
-							print('✅ É sendDataIndication!')
-							user_data = extra_pdu[1]['userData']
-							print(f'📦 userData: {len(user_data)} bytes')
-							print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
+						if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+							orig_data = user_data[12:]  # Pula security header (12 bytes)
+							decrypted = self.cryptolayer.client_dec(orig_data)
+							print(f'✅ Descriptografado: {len(decrypted)} bytes')
+							print(f'📝 Hex (40 primeiros): {decrypted[:40].hex()}')
 							
-							# DESCRIPTOGRAFAR SE NECESSÁRIO (igual ao __x224_reader)
-							if self.cryptolayer is not None:
-								from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
+							# PARSEAR COMO TS_SHARECONTROLHEADER
+							from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
+							
+							try:
+								shc = TS_SHARECONTROLHEADER.from_bytes(decrypted)
+								print(f'\n🎉 pduType = {shc.pduType.name}')
 								
+								if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
+									print('✅✅✅ É DEMANDACTIVEPDU!')
+								
+								# Recolocar dados DESCRIPTOGRAFADOS na fila
+								print('🔄 Recolocando dados descriptografados na fila MCS...')
+								await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
+								
+							except Exception as e:
+								print(f'❌ Erro parse: {e}')
+								# Tentar com offset 4
 								try:
-									sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-									print(f'🔐 Security flags: {sec_hdr.flags}')
-									
-									if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-										print('🔓 Descriptografando...')
-										orig_data = user_data[12:]  # Pula security header
-										decrypted = self.cryptolayer.client_dec(orig_data)
-										print(f'✅ Descriptografado: {len(decrypted)} bytes')
-										print(f'📝 Hex (40 primeiros): {decrypted[:40].hex()}')
-										
-										# TENTAR PARSEAR COMO TS_SHARECONTROLHEADER
-										from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
-										
-										# Testar offset 0
-										try:
-											shc = TS_SHARECONTROLHEADER.from_bytes(decrypted)
-											print(f'\n✅✅✅ ENCONTRADO: pduType = {shc.pduType.name}')
-											
-											if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-												print('🎉🎉🎉 É DEMANDACTIVEPDU!')
-												print('🔄 Recolocando dados descriptografados na fila...')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-											else:
-												print(f'⚠️ Não é DEMANDACTIVEPDU, é {shc.pduType.name}')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-										except Exception as e:
-											print(f'❌ Erro parse com offset 0: {e}')
-											# Tentar offset 4
-											try:
-												shc = TS_SHARECONTROLHEADER.from_bytes(decrypted[4:])
-												print(f'\n✅✅✅ ENCONTRADO (offset 4): pduType = {shc.pduType.name}')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted[4:], None))
-											except Exception as e2:
-												print(f'❌ Erro parse com offset 4: {e2}')
-												print('⚠️ Recolocando dados brutos...')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-									else:
-										print('⚠️ Dados não criptografados')
-										await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-								except Exception as e:
-									print(f'❌ Erro ao processar security header: {e}')
-									await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-							else:
-								print('⚠️ Sem cryptolayer')
-								await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+									shc = TS_SHARECONTROLHEADER.from_bytes(decrypted[4:])
+									print(f'\n🎉 pduType (offset 4) = {shc.pduType.name}')
+									await self.__joined_channels['MCS'].out_queue.put((decrypted[4:], None))
+								except:
+									await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
 						else:
-							print(f'⚠️ Não é sendDataIndication, é {extra_pdu[0]}')
-							await self.__joined_channels['MCS'].out_queue.put((remaining, None))
-							
-					except Exception as e:
-						print(f'❌ Erro ao decodificar extras: {e}')
-						print('⚠️ Recolocando dados brutos...')
+							print('⚠️ userData não está criptografado')
+							await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+					else:
+						print('⚠️ Sem cryptolayer, não posso descriptografar')
+						# Sem cryptolayer, os dados deveriam estar em claro
 						await self.__joined_channels['MCS'].out_queue.put((remaining, None))
 
 			print('\n✅ License handling concluído\n')
@@ -851,6 +825,7 @@ class RDPConnection:
 		except Exception as e:
 			logger.error(f"Error: {e}, {traceback.format_exc()}")
 			return None, e
+
 	async def __handle_mandatory_capability_exchange(self):
 		try:
 			print('\n===== AGUARDANDO DEMANDACTIVEPDU =====')
