@@ -750,6 +750,7 @@ class RDPConnection:
 
 			print(f'📦 Recebido {len(data)} bytes TOTAL')
 			
+			# Decodificar o MCS PDU
 			res = self._t125_per_codec.decode('DomainMCSPDU', data)
 			print(f'📋 DomainMCSPDU tipo: {res[0]}')
 			
@@ -758,7 +759,7 @@ class RDPConnection:
 				if res[1]['result'] != 'rt-successful':
 					raise Exception('License error! tokenInhibitConfirm:result not successful')
 				
-				# Calcular dados extras
+				# Calcular tamanho do tokenInhibitConfirm
 				encoded = self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1]))
 				encoded_size = len(encoded)
 				remaining = data[encoded_size:]
@@ -767,38 +768,81 @@ class RDPConnection:
 				print(f'📏 Dados extras: {len(remaining)} bytes')
 				
 				if len(remaining) > 10:
-					print(f'⚠️ Há dados extras (provavelmente DEMANDACTIVEPDU criptografado)')
+					print(f'\n⚠️ Há {len(remaining)} bytes extras!')
+					print(f'📝 Hex (40 primeiros): {remaining[:40].hex()}')
 					
-					# DESCRIPTOGRAFAR OS DADOS EXTRAS
-					if self.cryptolayer is not None:
-						from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
+					# TENTAR DECODIFICAR COMO sendDataIndication (igual ao __x224_reader)
+					try:
+						print('\n🔍 Tentando decodificar como sendDataIndication...')
+						extra_pdu = self._t125_per_codec.decode('DomainMCSPDU', remaining)
+						print(f'✅ Tipo: {extra_pdu[0]}')
 						
-						try:
-							sec_hdr = TS_SECURITY_HEADER1.from_bytes(remaining)
-							print(f'🔐 Security header flags: {sec_hdr.flags}')
+						if extra_pdu[0] == 'sendDataIndication':
+							print('✅ É sendDataIndication!')
+							user_data = extra_pdu[1]['userData']
+							print(f'📦 userData: {len(user_data)} bytes')
+							print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
 							
-							if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-								print('🔓 Descriptografando dados...')
-								encrypted_data = remaining[12:]  # Pula o security header (12 bytes)
-								decrypted_data = self.cryptolayer.client_dec(encrypted_data)
-								print(f'✅ Descriptografado: {len(decrypted_data)} bytes')
-								print(f'📝 Hex (20 primeiros): {decrypted_data[:20].hex()}')
+							# DESCRIPTOGRAFAR SE NECESSÁRIO (igual ao __x224_reader)
+							if self.cryptolayer is not None:
+								from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
 								
-								# Recolocar dados DESCRIPTOGRAFADOS na fila
-								print('🔄 Recolocando dados descriptografados na fila...')
-								await self.__joined_channels['MCS'].out_queue.put((decrypted_data, None))
+								try:
+									sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
+									print(f'🔐 Security flags: {sec_hdr.flags}')
+									
+									if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+										print('🔓 Descriptografando...')
+										orig_data = user_data[12:]  # Pula security header
+										decrypted = self.cryptolayer.client_dec(orig_data)
+										print(f'✅ Descriptografado: {len(decrypted)} bytes')
+										print(f'📝 Hex (40 primeiros): {decrypted[:40].hex()}')
+										
+										# TENTAR PARSEAR COMO TS_SHARECONTROLHEADER
+										from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
+										
+										# Testar offset 0
+										try:
+											shc = TS_SHARECONTROLHEADER.from_bytes(decrypted)
+											print(f'\n✅✅✅ ENCONTRADO: pduType = {shc.pduType.name}')
+											
+											if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
+												print('🎉🎉🎉 É DEMANDACTIVEPDU!')
+												print('🔄 Recolocando dados descriptografados na fila...')
+												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
+											else:
+												print(f'⚠️ Não é DEMANDACTIVEPDU, é {shc.pduType.name}')
+												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
+										except Exception as e:
+											print(f'❌ Erro parse com offset 0: {e}')
+											# Tentar offset 4
+											try:
+												shc = TS_SHARECONTROLHEADER.from_bytes(decrypted[4:])
+												print(f'\n✅✅✅ ENCONTRADO (offset 4): pduType = {shc.pduType.name}')
+												await self.__joined_channels['MCS'].out_queue.put((decrypted[4:], None))
+											except Exception as e2:
+												print(f'❌ Erro parse com offset 4: {e2}')
+												print('⚠️ Recolocando dados brutos...')
+												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
+									else:
+										print('⚠️ Dados não criptografados')
+										await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+								except Exception as e:
+									print(f'❌ Erro ao processar security header: {e}')
+									await self.__joined_channels['MCS'].out_queue.put((user_data, None))
 							else:
-								print('⚠️ Dados não estão criptografados, recolocando como estão')
-								await self.__joined_channels['MCS'].out_queue.put((remaining, None))
-						except Exception as e:
-							print(f'❌ Erro ao descriptografar: {e}')
-							print('   Recolocando dados brutos na fila...')
+								print('⚠️ Sem cryptolayer')
+								await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+						else:
+							print(f'⚠️ Não é sendDataIndication, é {extra_pdu[0]}')
 							await self.__joined_channels['MCS'].out_queue.put((remaining, None))
-					else:
-						print('⚠️ Sem cryptolayer, recolocando dados brutos')
+							
+					except Exception as e:
+						print(f'❌ Erro ao decodificar extras: {e}')
+						print('⚠️ Recolocando dados brutos...')
 						await self.__joined_channels['MCS'].out_queue.put((remaining, None))
 
-			print('✅ License handling concluído\n')
+			print('\n✅ License handling concluído\n')
 			return True, None
 			
 		except asyncio.TimeoutError:
