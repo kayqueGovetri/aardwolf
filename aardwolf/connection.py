@@ -812,9 +812,41 @@ class RDPConnection:
 							print('⚠️ userData não está criptografado')
 							await self.__joined_channels['MCS'].out_queue.put((user_data, None))
 					else:
-						print('⚠️ Sem cryptolayer, não posso descriptografar')
-						# Sem cryptolayer, os dados deveriam estar em claro
-						await self.__joined_channels['MCS'].out_queue.put((remaining, None))
+						print('⚠️ Sem cryptolayer')
+						print(f'📝 DEBUG: Hex completo dos extras: {remaining.hex()}')
+						
+						# DEBUG: Tentar decodificar como MCS PDU
+						try:
+							print('\n🔍 Tentando decodificar como DomainMCSPDU...')
+							extra_pdu = self._t125_per_codec.decode('DomainMCSPDU', remaining)
+							print(f'✅ Tipo MCS: {extra_pdu[0]}')
+							
+							if extra_pdu[0] == 'sendDataIndication':
+								print('✅ É sendDataIndication!')
+								user_data = extra_pdu[1]['userData']
+								print(f'📦 userData: {len(user_data)} bytes')
+								print(f'📝 userData hex (40 primeiros): {user_data[:40].hex()}')
+								print('🔄 Recolocando userData na fila...')
+								await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+							else:
+								print(f'⚠️ Tipo inesperado: {extra_pdu[0]}')
+								await self.__joined_channels['MCS'].out_queue.put((remaining, None))
+						except Exception as e:
+							print(f'❌ Erro decodificar MCS: {e}')
+							print(f'📝 Tipo erro: {type(e).__name__}')
+							
+							# DEBUG: Tentar parsear direto como TS_SHARECONTROLHEADER
+							try:
+								from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
+								print('\n🔍 Tentando parsear direto como TS_SHARECONTROLHEADER...')
+								shc = TS_SHARECONTROLHEADER.from_bytes(remaining)
+								print(f'✅ pduType: {shc.pduType.name}')
+								print('🔄 Recolocando na fila...')
+								await self.__joined_channels['MCS'].out_queue.put((remaining, None))
+							except Exception as e2:
+								print(f'❌ Erro parsear SHARECONTROLHEADER: {e2}')
+								print('⚠️ Recolocando dados brutos na fila...')
+								await self.__joined_channels['MCS'].out_queue.put((remaining, None))
 
 			print('\n✅ License handling concluído\n')
 			return True, None
