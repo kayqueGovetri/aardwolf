@@ -825,119 +825,7 @@ class RDPConnection:
 		except Exception as e:
 			logger.error(f"Error: {e}, {traceback.format_exc()}")
 			return None, e
-		try:
-			print('\n===== HANDLE LICENSE =====')
-			
-			data, err = await asyncio.wait_for(
-				self.__joined_channels['MCS'].out_queue.get(),
-				timeout=5
-			)
-			if err is not None:
-				raise err
 
-			print(f'📦 Recebido {len(data)} bytes TOTAL')
-			
-			# Decodificar o MCS PDU
-			res = self._t125_per_codec.decode('DomainMCSPDU', data)
-			print(f'📋 DomainMCSPDU tipo: {res[0]}')
-			
-			if res[0] == 'tokenInhibitConfirm':
-				print('✅ tokenInhibitConfirm recebido')
-				if res[1]['result'] != 'rt-successful':
-					raise Exception('License error! tokenInhibitConfirm:result not successful')
-				
-				# Calcular tamanho do tokenInhibitConfirm
-				encoded = self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1]))
-				encoded_size = len(encoded)
-				remaining = data[encoded_size:]
-				
-				print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
-				print(f'📏 Dados extras: {len(remaining)} bytes')
-				
-				if len(remaining) > 10:
-					print(f'\n⚠️ Há {len(remaining)} bytes extras!')
-					print(f'📝 Hex (40 primeiros): {remaining[:40].hex()}')
-					
-					# TENTAR DECODIFICAR COMO sendDataIndication (igual ao __x224_reader)
-					try:
-						print('\n🔍 Tentando decodificar como sendDataIndication...')
-						extra_pdu = self._t125_per_codec.decode('DomainMCSPDU', remaining)
-						print(f'✅ Tipo: {extra_pdu[0]}')
-						
-						if extra_pdu[0] == 'sendDataIndication':
-							print('✅ É sendDataIndication!')
-							user_data = extra_pdu[1]['userData']
-							print(f'📦 userData: {len(user_data)} bytes')
-							print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
-							
-							# DESCRIPTOGRAFAR SE NECESSÁRIO (igual ao __x224_reader)
-							if self.cryptolayer is not None:
-								from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
-								
-								try:
-									sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-									print(f'🔐 Security flags: {sec_hdr.flags}')
-									
-									if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-										print('🔓 Descriptografando...')
-										orig_data = user_data[12:]  # Pula security header
-										decrypted = self.cryptolayer.client_dec(orig_data)
-										print(f'✅ Descriptografado: {len(decrypted)} bytes')
-										print(f'📝 Hex (40 primeiros): {decrypted[:40].hex()}')
-										
-										# TENTAR PARSEAR COMO TS_SHARECONTROLHEADER
-										from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
-										
-										# Testar offset 0
-										try:
-											shc = TS_SHARECONTROLHEADER.from_bytes(decrypted)
-											print(f'\n✅✅✅ ENCONTRADO: pduType = {shc.pduType.name}')
-											
-											if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-												print('🎉🎉🎉 É DEMANDACTIVEPDU!')
-												print('🔄 Recolocando dados descriptografados na fila...')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-											else:
-												print(f'⚠️ Não é DEMANDACTIVEPDU, é {shc.pduType.name}')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-										except Exception as e:
-											print(f'❌ Erro parse com offset 0: {e}')
-											# Tentar offset 4
-											try:
-												shc = TS_SHARECONTROLHEADER.from_bytes(decrypted[4:])
-												print(f'\n✅✅✅ ENCONTRADO (offset 4): pduType = {shc.pduType.name}')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted[4:], None))
-											except Exception as e2:
-												print(f'❌ Erro parse com offset 4: {e2}')
-												print('⚠️ Recolocando dados brutos...')
-												await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-									else:
-										print('⚠️ Dados não criptografados')
-										await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-								except Exception as e:
-									print(f'❌ Erro ao processar security header: {e}')
-									await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-							else:
-								print('⚠️ Sem cryptolayer')
-								await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-						else:
-							print(f'⚠️ Não é sendDataIndication, é {extra_pdu[0]}')
-							await self.__joined_channels['MCS'].out_queue.put((remaining, None))
-							
-					except Exception as e:
-						print(f'❌ Erro ao decodificar extras: {e}')
-						print('⚠️ Recolocando dados brutos...')
-						await self.__joined_channels['MCS'].out_queue.put((remaining, None))
-
-			print('\n✅ License handling concluído\n')
-			return True, None
-			
-		except asyncio.TimeoutError:
-			print('⏱ Timeout aguardando licenciamento')
-			return True, None
-		except Exception as e:
-			logger.error(f"Error: {e}, {traceback.format_exc()}")
-			return None, e
 	async def __handle_mandatory_capability_exchange(self):
 		try:
 			print('\n===== AGUARDANDO DEMANDACTIVEPDU =====')
@@ -1009,13 +897,15 @@ class RDPConnection:
 				print(f'\n❌❌❌ TIMEOUT: Nenhum DEMANDACTIVEPDU após {max_attempts} tentativas')
 				raise Exception(f'Timeout: DEMANDACTIVEPDU não recebido')
 			
+			print('\n✅ DEMANDACTIVEPDU processado, extraindo capabilities...')
 			# Continua com o processamento normal do DEMANDACTIVEPDU
 			for cap in res.capabilitySets:
 				if cap.capabilitySetType == CAPSTYPE.GENERAL:
 					cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
 					if EXTRAFLAG.ENC_SALTED_CHECKSUM in cap.extraFlags and self.cryptolayer is not None:
 						self.cryptolayer.use_encrypted_mac = True
-			
+			print('✅ Capabilities processadas, montando CONFIRMACTIVEPDU...')
+
 			caps = []
 			# now we send our capabilities
 			cap = TS_GENERAL_CAPABILITYSET()
@@ -1086,12 +976,14 @@ class RDPConnection:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
+			print('✅ CONFIRMACTIVEPDU montado, enviando...')
 
 			await self.handle_out_data(msg, sec_hdr, None, share_hdr, self.__joined_channels['MCS'].channel_id, False)
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
 			if err is not None:
 				raise err
-			
+			print('✅ CONFIRMACTIVEPDU enviado, aguardando SYNCHRONIZE...')
+
 			data = data[data_start_offset:]
 			shc = TS_SHARECONTROLHEADER.from_bytes(data)
 			if shc.pduType == PDUTYPE.DATAPDU:
@@ -1124,7 +1016,8 @@ class RDPConnection:
 				sec_hdr.flagsHi = 0
 			
 			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-
+			print(f'📦 Recebido após CONFIRMACTIVEPDU: {len(data)} bytes')
+			print(f'📝 Hex (20 primeiros): {data[:20].hex()}')
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
 			data_hdr.streamID = STREAM_TYPE.MED
@@ -1140,6 +1033,7 @@ class RDPConnection:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
+print('✅ CONFIRMACTIVEPDU montado, enviando...')
 
 			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 			
