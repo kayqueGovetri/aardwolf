@@ -751,28 +751,35 @@ class RDPConnection:
 			print(f'📦 Recebido {len(data)} bytes')
 			print(f'📝 Hex (primeiros 40 bytes): {data[:40].hex()}')
 			
-			try:
-				res = self._t125_per_codec.decode('DomainMCSPDU', data)
-				print(f'📋 DomainMCSPDU tipo: {res[0]}')
-				print(f'📋 Conteúdo: {res[1]}')
-			except Exception as e:
-				print(f'❌ Erro ao decodificar DomainMCSPDU: {e}')
-				print(f'   Tentando como raw data...')
-				# Pode ser que o servidor envie licensing PDU diretamente
-				# sem wrapper MCS em alguns casos
-				raise
+			res = self._t125_per_codec.decode('DomainMCSPDU', data)
+			print(f'📋 DomainMCSPDU tipo: {res[0]}')
 			
 			if res[0] == 'tokenInhibitConfirm':
 				print('✅ tokenInhibitConfirm recebido')
 				if res[1]['result'] != 'rt-successful':
 					raise Exception('License error! tokenInhibitConfirm:result not successful')
+				
+				# VERIFICAR SE HÁ DADOS EXTRAS (DEMANDACTIVEPDU) NO MESMO PACOTE
+				encoded_size = len(self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1])))
+				remaining_data = data[encoded_size:]
+				
+				print(f'📏 Tamanho do tokenInhibitConfirm codificado: {encoded_size} bytes')
+				print(f'📏 Dados restantes no buffer: {len(remaining_data)} bytes')
+				
+				if len(remaining_data) > 10:  # Se há dados significativos sobrando
+					print(f'⚠️ ATENÇÃO: Há {len(remaining_data)} bytes extras após tokenInhibitConfirm!')
+					print(f'📝 Hex dos dados extras (primeiros 40): {remaining_data[:40].hex()}')
+					
+					# RECOLOCAR OS DADOS EXTRAS NA FILA PARA SEREM PROCESSADOS
+					# pelo __handle_mandatory_capability_exchange()
+					print('🔄 Recolocando dados extras na fila MCS...')
+					await self.__joined_channels['MCS'].out_queue.put((remaining_data, None))
 			else:
 				print(f'⚠️ Tipo inesperado: {res[0]} (esperava tokenInhibitConfirm)')
-				# Em vez de falhar, vamos tentar continuar
-				# raise Exception('tokenInhibitConfirm did not show up in reply!')
 
 			print('✅ License handling concluído')
 			return True, None
+			
 		except asyncio.TimeoutError:
 			print('⏱ Timeout aguardando resposta de licenciamento')
 			print('⚠️ Servidor pode não exigir licenciamento, continuando...')
