@@ -767,41 +767,71 @@ class RDPConnection:
 				print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
 				print(f'📏 Dados extras: {len(remaining)} bytes')
 			
-				user_data = remaining
-				if self.cryptolayer is not None:
-					print('🔓 Descriptografando com cryptolayer...')
-					sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-					if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-						orig_data = user_data[12:]
-						user_data = self.cryptolayer.client_dec(orig_data)
-						print(f'✅ Descriptografado: {len(user_data)} bytes')
-				else:
-					print('⚠️ Sem cryptolayer - dados devem estar em claro')
-					# Security header básico sempre tem 4 bytes
-					# Se o primeiro byte é 0x08, é security header
-					if len(user_data) > 4 and user_data[0] == 0x08:
-						print(f'🔍 Detectado security header (primeiro byte = 0x08)')
-						print(f'   Primeiros 4 bytes: {user_data[:4].hex()}')
-						print('⚠️ Removendo security header (4 bytes)...')
-						user_data = user_data[4:]
-						print(f'📦 Dados após remover header: {len(user_data)} bytes')
-						print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
+				if len(remaining) > 10:
+					print(f'\n⚠️ Há {len(remaining)} bytes extras!')
+					print(f'📝 Hex COMPLETO (primeiros 100 bytes): {remaining[:100].hex()}')
+					
+					user_data = remaining
+					
+					# ANÁLISE DETALHADA DOS DADOS
+					print('\n🔍 ANÁLISE DOS DADOS:')
+					print(f'   Byte 0: 0x{user_data[0]:02x} (decimal: {user_data[0]})')
+					print(f'   Byte 1: 0x{user_data[1]:02x} (decimal: {user_data[1]})')
+					print(f'   Byte 2: 0x{user_data[2]:02x} (decimal: {user_data[2]})')
+					print(f'   Byte 3: 0x{user_data[3]:02x} (decimal: {user_data[3]})')
+					print(f'   Primeiros 4 bytes como int (little-endian): {int.from_bytes(user_data[:4], "little")}')
+					print(f'   Primeiros 2 bytes como int (little-endian): {int.from_bytes(user_data[:2], "little")}')
+					
+					# VERIFICAR SE É SECURITY HEADER
+					if user_data[0] == 0x08:
+						print(f'\n🔐 Primeiro byte = 0x08 → Parece ser security header')
+						print(f'   flags (bytes 0-1): 0x{user_data[0]:02x}{user_data[1]:02x}')
+						print(f'   flagsHi (bytes 2-3): 0x{user_data[2]:02x}{user_data[3]:02x}')
+						
+						# Verificar se tem ENCRYPT flag (0x0008)
+						flags = int.from_bytes(user_data[:2], 'little')
+						print(f'   flags (decimal): {flags}')
+						print(f'   Tem ENCRYPT (0x0008)? {bool(flags & 0x0008)}')
+						
+						if flags & 0x0008:
+							print(f'\n⚠️ DADOS ESTÃO CRIPTOGRAFADOS mas cryptolayer é None!')
+							print(f'   Isso significa que o servidor está usando RDP encryption')
+							print(f'   mesmo dentro de SSL/TLS (configuração incomum)')
+							print(f'\n   Security header completo (12 bytes):')
+							print(f'   {user_data[:12].hex()}')
+							print(f'\n   Dados criptografados (primeiros 40 bytes):')
+							print(f'   {user_data[12:52].hex()}')
+							print(f'\n❌ NÃO POSSO DESCRIPTOGRAFAR SEM CRYPTOLAYER!')
+						else:
+							print(f'\n✅ Dados NÃO estão criptografados')
+							print(f'   Removendo security header (4 bytes)...')
+							user_data = user_data[4:]
+							print(f'   Dados após remover header (primeiros 40 bytes):')
+							print(f'   {user_data[:40].hex()}')
+							
+							# TENTAR PARSEAR
+							try:
+								from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER
+								shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
+								print(f'\n✅ TS_SHARECONTROLHEADER parseado com sucesso!')
+								print(f'   totalLength: {shc.totalLength}')
+								print(f'   pduType: {shc.pduType} ({shc.pduType.value})')
+								print(f'   pduVersion: {shc.pduVersion}')
+								print(f'   pduSource: {shc.pduSource}')
+							except Exception as e:
+								print(f'\n❌ Erro ao parsear TS_SHARECONTROLHEADER: {e}')
 					else:
-						print(f'⚠️ Não detectado security header (primeiro byte = 0x{user_data[0]:02x})')
-				# ADICIONE ESTAS LINHAS QUE FALTARAM:
-				print(f'\n🔄 Recolocando {len(user_data)} bytes na fila MCS...')
-				print(f'📝 Hex final (40 primeiros): {user_data[:40].hex()}')
-				
-				# TENTAR PARSEAR PARA CONFIRMAR
-				from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER
-				try:
-					shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
-					print(f'✅ Pré-validação: pduType = {shc.pduType.name}')
-				except Exception as e:
-					print(f'⚠️ Pré-validação falhou: {e}')
-				
-				# RECOLOCAR NA FILA
-				await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+						print(f'\n⚠️ Primeiro byte = 0x{user_data[0]:02x} → NÃO é security header típico')
+						print(f'   Tentando parsear diretamente como TS_SHARECONTROLHEADER...')
+						try:
+							from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER
+							shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
+							print(f'\n✅ TS_SHARECONTROLHEADER parseado com sucesso!')
+							print(f'   totalLength: {shc.totalLength}')
+							print(f'   pduType: {shc.pduType} ({shc.pduType.value})')
+						except Exception as e:
+							print(f'\n❌ Erro ao parsear: {e}')
+
 
 			print('\n✅ License handling concluído\n')
 			return True, None
