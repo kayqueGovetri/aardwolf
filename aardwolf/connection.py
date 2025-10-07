@@ -748,8 +748,7 @@ class RDPConnection:
 			if err is not None:
 				raise err
 
-			print(f'📦 Recebido {len(data)} bytes')
-			print(f'📝 Hex (primeiros 40 bytes): {data[:40].hex()}')
+			print(f'📦 Recebido {len(data)} bytes TOTAL')
 			
 			res = self._t125_per_codec.decode('DomainMCSPDU', data)
 			print(f'📋 DomainMCSPDU tipo: {res[0]}')
@@ -759,30 +758,51 @@ class RDPConnection:
 				if res[1]['result'] != 'rt-successful':
 					raise Exception('License error! tokenInhibitConfirm:result not successful')
 				
-				# VERIFICAR SE HÁ DADOS EXTRAS (DEMANDACTIVEPDU) NO MESMO PACOTE
-				encoded_size = len(self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1])))
-				remaining_data = data[encoded_size:]
+				# Calcular dados extras
+				encoded = self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1]))
+				encoded_size = len(encoded)
+				remaining = data[encoded_size:]
 				
-				print(f'📏 Tamanho do tokenInhibitConfirm codificado: {encoded_size} bytes')
-				print(f'📏 Dados restantes no buffer: {len(remaining_data)} bytes')
+				print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
+				print(f'📏 Dados extras: {len(remaining)} bytes')
 				
-				if len(remaining_data) > 10:  # Se há dados significativos sobrando
-					print(f'⚠️ ATENÇÃO: Há {len(remaining_data)} bytes extras após tokenInhibitConfirm!')
-					print(f'📝 Hex dos dados extras (primeiros 40): {remaining_data[:40].hex()}')
+				if len(remaining) > 10:
+					print(f'⚠️ Há dados extras (provavelmente DEMANDACTIVEPDU criptografado)')
 					
-					# RECOLOCAR OS DADOS EXTRAS NA FILA PARA SEREM PROCESSADOS
-					# pelo __handle_mandatory_capability_exchange()
-					print('🔄 Recolocando dados extras na fila MCS...')
-					await self.__joined_channels['MCS'].out_queue.put((remaining_data, None))
-			else:
-				print(f'⚠️ Tipo inesperado: {res[0]} (esperava tokenInhibitConfirm)')
+					# DESCRIPTOGRAFAR OS DADOS EXTRAS
+					if self.cryptolayer is not None:
+						from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
+						
+						try:
+							sec_hdr = TS_SECURITY_HEADER1.from_bytes(remaining)
+							print(f'🔐 Security header flags: {sec_hdr.flags}')
+							
+							if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+								print('🔓 Descriptografando dados...')
+								encrypted_data = remaining[12:]  # Pula o security header (12 bytes)
+								decrypted_data = self.cryptolayer.client_dec(encrypted_data)
+								print(f'✅ Descriptografado: {len(decrypted_data)} bytes')
+								print(f'📝 Hex (20 primeiros): {decrypted_data[:20].hex()}')
+								
+								# Recolocar dados DESCRIPTOGRAFADOS na fila
+								print('🔄 Recolocando dados descriptografados na fila...')
+								await self.__joined_channels['MCS'].out_queue.put((decrypted_data, None))
+							else:
+								print('⚠️ Dados não estão criptografados, recolocando como estão')
+								await self.__joined_channels['MCS'].out_queue.put((remaining, None))
+						except Exception as e:
+							print(f'❌ Erro ao descriptografar: {e}')
+							print('   Recolocando dados brutos na fila...')
+							await self.__joined_channels['MCS'].out_queue.put((remaining, None))
+					else:
+						print('⚠️ Sem cryptolayer, recolocando dados brutos')
+						await self.__joined_channels['MCS'].out_queue.put((remaining, None))
 
-			print('✅ License handling concluído')
+			print('✅ License handling concluído\n')
 			return True, None
 			
 		except asyncio.TimeoutError:
-			print('⏱ Timeout aguardando resposta de licenciamento')
-			print('⚠️ Servidor pode não exigir licenciamento, continuando...')
+			print('⏱ Timeout aguardando licenciamento')
 			return True, None
 		except Exception as e:
 			logger.error(f"Error: {e}, {traceback.format_exc()}")
