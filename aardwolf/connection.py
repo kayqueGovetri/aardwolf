@@ -766,27 +766,28 @@ class RDPConnection:
 				
 				print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
 				print(f'📏 Dados extras: {len(remaining)} bytes')
-				
-			if self.cryptolayer is not None:
-				print('🔓 Descriptografando com cryptolayer...')
-				sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-				if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-					orig_data = user_data[12:]
-					user_data = self.cryptolayer.client_dec(orig_data)
-					print(f'✅ Descriptografado: {len(user_data)} bytes')
-			else:
-				print('⚠️ Sem cryptolayer - dados devem estar em claro')
-				# Security header básico sempre tem 4 bytes
-				# Se o primeiro byte é 0x08, é security header
-				if len(user_data) > 4 and user_data[0] == 0x08:
-					print(f'🔍 Detectado security header (primeiro byte = 0x08)')
-					print(f'   Primeiros 4 bytes: {user_data[:4].hex()}')
-					print('⚠️ Removendo security header (4 bytes)...')
-					user_data = user_data[4:]
-					print(f'📦 Dados após remover header: {len(user_data)} bytes')
-					print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
+			
+				user_data = remaining
+				if self.cryptolayer is not None:
+					print('🔓 Descriptografando com cryptolayer...')
+					sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
+					if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+						orig_data = user_data[12:]
+						user_data = self.cryptolayer.client_dec(orig_data)
+						print(f'✅ Descriptografado: {len(user_data)} bytes')
 				else:
-					print(f'⚠️ Não detectado security header (primeiro byte = 0x{user_data[0]:02x})')
+					print('⚠️ Sem cryptolayer - dados devem estar em claro')
+					# Security header básico sempre tem 4 bytes
+					# Se o primeiro byte é 0x08, é security header
+					if len(user_data) > 4 and user_data[0] == 0x08:
+						print(f'🔍 Detectado security header (primeiro byte = 0x08)')
+						print(f'   Primeiros 4 bytes: {user_data[:4].hex()}')
+						print('⚠️ Removendo security header (4 bytes)...')
+						user_data = user_data[4:]
+						print(f'📦 Dados após remover header: {len(user_data)} bytes')
+						print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
+					else:
+						print(f'⚠️ Não detectado security header (primeiro byte = 0x{user_data[0]:02x})')
 			print('\n✅ License handling concluído\n')
 			return True, None
 			
