@@ -750,6 +750,93 @@ class RDPConnection:
 
 			print(f'📦 Recebido {len(data)} bytes TOTAL')
 			
+			# Decodificar tokenInhibitConfirm
+			res = self._t125_per_codec.decode('DomainMCSPDU', data)
+			print(f'📋 DomainMCSPDU tipo: {res[0]}')
+			
+			if res[0] == 'tokenInhibitConfirm':
+				print('✅ tokenInhibitConfirm recebido')
+				if res[1]['result'] != 'rt-successful':
+					raise Exception('License error! tokenInhibitConfirm:result not successful')
+				
+				# Calcular tamanho do tokenInhibitConfirm
+				encoded = self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1]))
+				encoded_size = len(encoded)
+				remaining = data[encoded_size:]
+				
+				print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
+				print(f'📏 Dados extras: {len(remaining)} bytes')
+				
+				if len(remaining) > 10:
+					print(f'\n⚠️ Há {len(remaining)} bytes extras (userData criptografado)!')
+					print(f'📝 Hex (40 primeiros): {remaining[:40].hex()}')
+					
+					# PROCESSAR COMO userData (igual ao __x224_reader linha 1178-1195)
+					user_data = remaining
+					
+					if self.cryptolayer is not None:
+						print('🔓 Descriptografando userData...')
+						sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
+						print(f'🔐 Security flags: {sec_hdr.flags}')
+						
+						if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+							orig_data = user_data[12:]  # Pula security header (12 bytes)
+							decrypted = self.cryptolayer.client_dec(orig_data)
+							print(f'✅ Descriptografado: {len(decrypted)} bytes')
+							print(f'📝 Hex (40 primeiros): {decrypted[:40].hex()}')
+							
+							# PARSEAR COMO TS_SHARECONTROLHEADER
+							from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
+							
+							try:
+								shc = TS_SHARECONTROLHEADER.from_bytes(decrypted)
+								print(f'\n🎉 pduType = {shc.pduType.name}')
+								
+								if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
+									print('✅✅✅ É DEMANDACTIVEPDU!')
+								
+								# Recolocar dados DESCRIPTOGRAFADOS na fila
+								print('🔄 Recolocando dados descriptografados na fila MCS...')
+								await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
+								
+							except Exception as e:
+								print(f'❌ Erro parse: {e}')
+								# Tentar com offset 4
+								try:
+									shc = TS_SHARECONTROLHEADER.from_bytes(decrypted[4:])
+									print(f'\n🎉 pduType (offset 4) = {shc.pduType.name}')
+									await self.__joined_channels['MCS'].out_queue.put((decrypted[4:], None))
+								except:
+									await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
+						else:
+							print('⚠️ userData não está criptografado')
+							await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+					else:
+						print('⚠️ Sem cryptolayer, não posso descriptografar')
+						# Sem cryptolayer, os dados deveriam estar em claro
+						await self.__joined_channels['MCS'].out_queue.put((remaining, None))
+
+			print('\n✅ License handling concluído\n')
+			return True, None
+			
+		except asyncio.TimeoutError:
+			print('⏱ Timeout aguardando licenciamento')
+			return True, None
+		except Exception as e:
+			logger.error(f"Error: {e}, {traceback.format_exc()}")
+			return None, e
+		try:
+			print('\n===== HANDLE LICENSE =====')
+			
+			data, err = await asyncio.wait_for(
+				self.__joined_channels['MCS'].out_queue.get(),
+				timeout=5
+			)
+			if err is not None:
+				raise err
+
+			print(f'📦 Recebido {len(data)} bytes TOTAL')
+			
 			# Decodificar o MCS PDU
 			res = self._t125_per_codec.decode('DomainMCSPDU', data)
 			print(f'📋 DomainMCSPDU tipo: {res[0]}')
