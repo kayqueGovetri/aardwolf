@@ -711,7 +711,7 @@ class RDPConnection:
 
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
-			info.flags = INFO_FLAG.ENABLEWINDOWSKEY|INFO_FLAG.MAXIMIZESHELL|INFO_FLAG.UNICODE|INFO_FLAG.DISABLECTRLALTDEL|INFO_FLAG.MOUSE
+			info.flags = INFO_FLAG.ENABLEWINDOWSKEY|INFO_FLAG.MAXIMIZESHELL|INFO_FLAG.UNICODE|INFO_FLAG.DISABLECTRLALTDEL|INFO_FLAG.MOUSE|INFO_FLAG.LOGONNOTIFY
 			info.Domain = ''
 			info.UserName = ''
 			info.Password = ''
@@ -864,25 +864,6 @@ class RDPConnection:
 
 	async def __handle_mandatory_capability_exchange(self):
 		try:
-			print('\n📤 Enviando CLIENT_INFO_PDU...')
-			from aardwolf.protocol.T128.security import TS_SECURITY_HEADER
-			from aardwolf.protocol.T125.infopacket import TS_INFO_PACKET
-			
-			info = TS_INFO_PACKET()
-			info.CodePage = 0
-			info.flags = INFO_FLAG.MOUSE | INFO_FLAG.UNICODE | INFO_FLAG.LOGONNOTIFY | INFO_FLAG.ENABLEWINDOWSKEY
-			info.Domain = self.credentials.domain if self.credentials and self.credentials.domain else ''
-			info.UserName = self.credentials.username if self.credentials and self.credentials.username else ''
-			info.Password = self.credentials.secret if self.credentials and self.credentials.secret else ''	
-			info.AlternateShell = ''
-			info.WorkingDir = ''
-			
-			sec_hdr = TS_SECURITY_HEADER()
-			sec_hdr.flags = 0x48  # SEC_INFO_PKT
-			sec_hdr.flagsHi = 0
-			
-			await self.handle_out_data(info, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
-			print('✅ CLIENT_INFO_PDU enviado\n')
 			print('\n===== AGUARDANDO DEMANDACTIVEPDU =====')
 			# waiting for server to demand active pdu and inside send its capabilities
 			data_start_offset = 0
