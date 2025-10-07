@@ -873,8 +873,7 @@ class RDPConnection:
 			info.flags = 0x00000133  # INFO_MOUSE | INFO_UNICODE | INFO_LOGONNOTIFY | INFO_ENABLEWINDOWSKEY
 			info.Domain = self.credentials.domain if self.credentials and self.credentials.domain else ''
 			info.UserName = self.credentials.username if self.credentials and self.credentials.username else ''
-			info.Password = self.credentials.password if self.credentials and self.credentials.password else ''
-			info.AlternateShell = ''
+			info.Password = self.credentials.secret if self.credentials and self.credentials.secret else ''			info.AlternateShell = ''
 			info.WorkingDir = ''
 			
 			sec_hdr = TS_SECURITY_HEADER()
