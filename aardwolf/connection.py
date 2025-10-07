@@ -870,7 +870,7 @@ class RDPConnection:
 			
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
-			info.flags = 0x00000133  # INFO_MOUSE | INFO_UNICODE | INFO_LOGONNOTIFY | INFO_ENABLEWINDOWSKEY
+			info.flags = INFO_FLAG.MOUSE | INFO_FLAG.UNICODE | INFO_FLAG.LOGONNOTIFY | INFO_FLAG.ENABLEWINDOWSKEY
 			info.Domain = self.credentials.domain if self.credentials and self.credentials.domain else ''
 			info.UserName = self.credentials.username if self.credentials and self.credentials.username else ''
 			info.Password = self.credentials.secret if self.credentials and self.credentials.secret else ''	
