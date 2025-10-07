@@ -700,11 +700,11 @@ class RDPConnection:
 			systz.DaylightDate = systime
 			systz.DaylightBias = 4294967236
 
-			# extinfo = TS_EXTENDED_INFO_PACKET()
-			# extinfo.clientAddressFamily = CLI_AF.AF_INET
-			# extinfo.clientAddress = '10.10.10.101'
-			# extinfo.clientDir = 'C:\\WINNT\\System32\\mstscax.dll'
-			# extinfo.clientTimeZone = systz
+			extinfo = TS_EXTENDED_INFO_PACKET()
+			extinfo.clientAddressFamily = CLI_AF.AF_INET
+			extinfo.clientAddress = '10.10.10.101'
+			extinfo.clientDir = 'C:\\WINNT\\System32\\mstscax.dll'
+			extinfo.clientTimeZone = systz
 			# extinfo.clientSessionId = 0
 			if self.iosettings.performance_flags is not None:
 				extinfo.performanceFlags = self.iosettings.performance_flags
@@ -865,6 +865,24 @@ class RDPConnection:
 	async def __handle_mandatory_capability_exchange(self):
 		try:
 			print('\n===== AGUARDANDO DEMANDACTIVEPDU =====')
+			# DEBUG: Verificar se há dados em OUTROS canais
+			print('\n🔍 DEBUG: Verificando todos os canais...')
+			for channel_name in self.__joined_channels:
+				try:
+					if not self.__joined_channels[channel_name].out_queue.empty():
+						print(f'  ⚠️ Canal "{channel_name}" tem dados na fila!')
+						# Tentar ler sem bloquear
+						try:
+							data, err = self.__joined_channels[channel_name].out_queue.get_nowait()
+							print(f'     📦 {len(data)} bytes no canal {channel_name}')
+							print(f'     📝 Hex: {data[:40].hex()}')
+							# Recolocar na fila
+							await self.__joined_channels[channel_name].out_queue.put((data, err))
+						except:
+							pass
+				except:
+					pass
+			print('🔍 DEBUG: Fim da verificação de canais\n')			
 			# waiting for server to demand active pdu and inside send its capabilities
 			data_start_offset = 0
 			if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
