@@ -705,7 +705,7 @@ class RDPConnection:
 			extinfo.clientAddress = '10.10.10.101'
 			extinfo.clientDir = 'C:\\WINNT\\System32\\mstscax.dll'
 			extinfo.clientTimeZone = systz
-			extinfo.clientSessionId = 0
+			# extinfo.clientSessionId = 0
 			if self.iosettings.performance_flags is not None:
 				extinfo.performanceFlags = self.iosettings.performance_flags
 
