@@ -788,6 +788,21 @@ class RDPConnection:
 						print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
 					else:
 						print(f'⚠️ Não detectado security header (primeiro byte = 0x{user_data[0]:02x})')
+				# ADICIONE ESTAS LINHAS QUE FALTARAM:
+				print(f'\n🔄 Recolocando {len(user_data)} bytes na fila MCS...')
+				print(f'📝 Hex final (40 primeiros): {user_data[:40].hex()}')
+				
+				# TENTAR PARSEAR PARA CONFIRMAR
+				from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER
+				try:
+					shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
+					print(f'✅ Pré-validação: pduType = {shc.pduType.name}')
+				except Exception as e:
+					print(f'⚠️ Pré-validação falhou: {e}')
+				
+				# RECOLOCAR NA FILA
+				await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+
 			print('\n✅ License handling concluído\n')
 			return True, None
 			
