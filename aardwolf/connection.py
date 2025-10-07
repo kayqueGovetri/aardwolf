@@ -484,8 +484,8 @@ class RDPConnection:
 			ud_core.serverSelectedProtocol = self.x224_protocol
 			
 			ud_sec = TS_UD_CS_SEC()
-			ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH
-			ud_sec.extEncryptionMethods = ENCRYPTION_FLAG.FRENCH
+			# ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH
+			# ud_sec.extEncryptionMethods = ENCRYPTION_FLAG.FRENCH
 
 			ud_clust = TS_UD_CS_CLUSTER()
 			ud_clust.RedirectedSessionID = 0
