@@ -759,6 +759,7 @@ class RDPConnection:
 	
 	async def __handle_mandatory_capability_exchange(self):
 		try:
+			print('\n===== AGUARDANDO DEMANDACTIVEPDU =====')
 			# waiting for server to demand active pdu and inside send its capabilities
 			data_start_offset = 0
 			if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
@@ -770,59 +771,61 @@ class RDPConnection:
 			max_attempts = 10
 			res = None
 			for attempt in range(max_attempts):
-				data, err = await asyncio.wait_for(
-					self.__joined_channels['MCS'].out_queue.get(), 
-					timeout=10
-				)
+				print(f'\n[ATTEMPT {attempt+1}/{max_attempts}]')
+				
+				try:
+					data, err = await asyncio.wait_for(
+						self.__joined_channels['MCS'].out_queue.get(), 
+						timeout=2  # 2 segundos por tentativa
+					)
+				except asyncio.TimeoutError:
+					print(f'  ⏱ Timeout aguardando PDU (tentativa {attempt+1})')
+					continue
+				
 				if err is not None:
+					print(f'  ❌ Erro na fila: {err}')
 					raise err
 
-				raw = data[data_start_offset:]
+				print(f'  📦 Recebido {len(data)} bytes')
+				print(f'  🔧 Offset: {data_start_offset}')
+				print(f'  📝 Hex (20 bytes): {data[:20].hex()}')
 				
-				# ===== LOGS DE DEBUG =====
-				print(f'[ATTEMPT {attempt+1}] Recebido {len(data)} bytes, offset={data_start_offset}')
-				print(f'[ATTEMPT {attempt+1}] Primeiros 20 bytes: {data[:20].hex()}')
+				raw = data[data_start_offset:]
 				
 				try:
 					shc = TS_SHARECONTROLHEADER.from_bytes(raw)
-					print(f'[ATTEMPT {attempt+1}] pduType={shc.pduType.name}')
+					print(f'  📋 pduType: {shc.pduType.name}')
 				except Exception as e:
-					print(f'[ATTEMPT {attempt+1}] ERRO ao parsear: {e}')
+					print(f'  ❌ Erro parse header: {e}')
 					continue
-				# ===== FIM DOS LOGS =====
 
 				if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-					print(f'[ATTEMPT {attempt+1}] ✓ DEMANDACTIVEPDU recebido!')
+					print(f'  ✅✅✅ DEMANDACTIVEPDU RECEBIDO!')
 					res = TS_DEMAND_ACTIVE_PDU.from_bytes(raw)
 					break
 
 				elif shc.pduType == PDUTYPE.DATAPDU:
-					try:
-						shd = TS_SHAREDATAHEADER.from_bytes(raw)
-						print(f'[ATTEMPT {attempt+1}] pduType2={shd.pduType2.name}')
+					shd = TS_SHAREDATAHEADER.from_bytes(raw)
+					print(f'  📋 pduType2: {shd.pduType2.name}')
+					
+					if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
+						sei = TS_SET_ERROR_INFO_PDU.from_bytes(raw)
+						print(f'  ⚠️ errorInfo: {sei.errorInfo.name} (0x{sei.errorInfoRaw:08x})')
 						
-						if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
-							sei = TS_SET_ERROR_INFO_PDU.from_bytes(raw)
-							print(f'[ATTEMPT {attempt+1}] errorInfo={sei.errorInfo.name}')
-							
-							if sei.errorInfo == ERRINFO.NONE:
-								print(f'[ATTEMPT {attempt+1}] Ignorando ERRINFO_NONE')
-								continue
-							else:
-								raise Exception(f'Server error: {sei.errorInfo.name}')
-						else:
-							print(f'[ATTEMPT {attempt+1}] Ignorando DATAPDU: {shd.pduType2.name}')
+						if sei.errorInfo == ERRINFO.NONE:
+							print(f'  ➡️ Ignorando ERRINFO_NONE')
 							continue
-					except Exception as e:
-						print(f'[ATTEMPT {attempt+1}] ERRO ao processar DATAPDU: {e}')
+						else:
+							raise Exception(f'Server error: {sei.errorInfo.name}')
+					else:
+						print(f'  ➡️ Ignorando DATAPDU: {shd.pduType2.name}')
 						continue
 				else:
-					print(f'[ATTEMPT {attempt+1}] Ignorando PDU: {shc.pduType.name}')
+					print(f'  ➡️ Ignorando PDU: {shc.pduType.name}')
 					continue
-
-			# Se chegou aqui sem break:
+			
 			if res is None:
-				print(f'TIMEOUT: DEMANDACTIVEPDU não recebido após {max_attempts} tentativas')
+				print(f'\n❌❌❌ TIMEOUT: Nenhum DEMANDACTIVEPDU após {max_attempts} tentativas')
 				raise Exception(f'Timeout: DEMANDACTIVEPDU não recebido')
 			
 			# Continua com o processamento normal do DEMANDACTIVEPDU
