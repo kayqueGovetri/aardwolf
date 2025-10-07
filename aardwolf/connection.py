@@ -827,7 +827,7 @@ class RDPConnection:
 			return None, e
 
 	async def __handle_mandatory_capability_exchange(self):
-		try:
+		try:	
 			print('\n===== AGUARDANDO DEMANDACTIVEPDU =====')
 			# waiting for server to demand active pdu and inside send its capabilities
 			data_start_offset = 0
@@ -1033,7 +1033,7 @@ class RDPConnection:
 				sec_hdr = TS_SECURITY_HEADER()
 				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
 				sec_hdr.flagsHi = 0
-print('✅ CONFIRMACTIVEPDU montado, enviando...')
+			print('✅ CONFIRMACTIVEPDU montado, enviando...')
 
 			await self.handle_out_data(cli_ctrl, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 			
