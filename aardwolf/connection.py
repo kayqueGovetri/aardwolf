@@ -58,7 +58,7 @@ from aardwolf.protocol.T128.controlpdu import TS_CONTROL_PDU, CTRLACTION
 from aardwolf.protocol.T128.fontlistpdu import TS_FONT_LIST_PDU
 from aardwolf.protocol.T128.inputeventpdu import TS_SHAREDATAHEADER, TS_INPUT_EVENT, TS_INPUT_PDU_DATA
 from aardwolf.protocol.T125.securityexchangepdu import TS_SECURITY_PACKET
-from aardwolf.protocol.T128.seterrorinfopdu import TS_SET_ERROR_INFO_PDU
+from aardwolf.protocol.T128.seterrorinfopdu import TS_SET_ERROR_INFO_PDU, ERRINFO
 from aardwolf.protocol.T128.shutdownreqpdu import TS_SHUTDOWN_REQ_PDU
 from aardwolf.protocol.T128.share import PDUTYPE, STREAM_TYPE, PDUTYPE2
 
@@ -760,22 +760,72 @@ class RDPConnection:
 	async def __handle_mandatory_capability_exchange(self):
 		try:
 			# waiting for server to demand active pdu and inside send its capabilities
-			data, err = await self.__joined_channels['MCS'].out_queue.get()
-			if err is not None:
-				raise err
-
 			data_start_offset = 0
 			if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
 				# encryptionLevel == 1 means that server data is not encrypted. This results in this part of the negotiation 
 				# that the server sends data to the client with an empty security header (which is not documented....)
 				data_start_offset = 4
 
-			data = data[data_start_offset:]
-			shc = TS_SHARECONTROLHEADER.from_bytes(data)
-			if shc.pduType != PDUTYPE.DEMANDACTIVEPDU:
-				raise Exception('Unexpected reply! Expected DEMANDACTIVEPDU got "%s" instead!' % shc.pduType.name)
+			# Loop com retry para receber DEMANDACTIVEPDU
+			max_attempts = 10
+			res = None
+			for attempt in range(max_attempts):
+				data, err = await asyncio.wait_for(
+					self.__joined_channels['MCS'].out_queue.get(), 
+					timeout=10
+				)
+				if err is not None:
+					raise err
+
+				raw = data[data_start_offset:]
+				
+				# ===== LOGS DE DEBUG =====
+				print(f'[ATTEMPT {attempt+1}] Recebido {len(data)} bytes, offset={data_start_offset}')
+				print(f'[ATTEMPT {attempt+1}] Primeiros 20 bytes: {data[:20].hex()}')
+				
+				try:
+					shc = TS_SHARECONTROLHEADER.from_bytes(raw)
+					print(f'[ATTEMPT {attempt+1}] pduType={shc.pduType.name}')
+				except Exception as e:
+					print(f'[ATTEMPT {attempt+1}] ERRO ao parsear: {e}')
+					continue
+				# ===== FIM DOS LOGS =====
+
+				if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
+					print(f'[ATTEMPT {attempt+1}] ✓ DEMANDACTIVEPDU recebido!')
+					res = TS_DEMAND_ACTIVE_PDU.from_bytes(raw)
+					break
+
+				elif shc.pduType == PDUTYPE.DATAPDU:
+					try:
+						shd = TS_SHAREDATAHEADER.from_bytes(raw)
+						print(f'[ATTEMPT {attempt+1}] pduType2={shd.pduType2.name}')
+						
+						if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
+							sei = TS_SET_ERROR_INFO_PDU.from_bytes(raw)
+							print(f'[ATTEMPT {attempt+1}] errorInfo={sei.errorInfo.name}')
+							
+							if sei.errorInfo == ERRINFO.NONE:
+								print(f'[ATTEMPT {attempt+1}] Ignorando ERRINFO_NONE')
+								continue
+							else:
+								raise Exception(f'Server error: {sei.errorInfo.name}')
+						else:
+							print(f'[ATTEMPT {attempt+1}] Ignorando DATAPDU: {shd.pduType2.name}')
+							continue
+					except Exception as e:
+						print(f'[ATTEMPT {attempt+1}] ERRO ao processar DATAPDU: {e}')
+						continue
+				else:
+					print(f'[ATTEMPT {attempt+1}] Ignorando PDU: {shc.pduType.name}')
+					continue
+
+			# Se chegou aqui sem break:
+			if res is None:
+				print(f'TIMEOUT: DEMANDACTIVEPDU não recebido após {max_attempts} tentativas')
+				raise Exception(f'Timeout: DEMANDACTIVEPDU não recebido')
 			
-			res = TS_DEMAND_ACTIVE_PDU.from_bytes(data)
+			# Continua com o processamento normal do DEMANDACTIVEPDU
 			for cap in res.capabilitySets:
 				if cap.capabilitySetType == CAPSTYPE.GENERAL:
 					cap = typing.cast(TS_GENERAL_CAPABILITYSET, cap.capability)
