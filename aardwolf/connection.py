@@ -767,56 +767,26 @@ class RDPConnection:
 				print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
 				print(f'📏 Dados extras: {len(remaining)} bytes')
 				
-				if len(remaining) > 10:
-					print(f'\n⚠️ Há {len(remaining)} bytes extras!')
-					print(f'📝 Hex (60 primeiros): {remaining[:60].hex()}')
-					
-					# PROCESSAR EXATAMENTE COMO __x224_reader() faz (linha 1203-1220)
-					# Os dados extras são userData que pode ter security header
-					
-					user_data = remaining
-					
-					# Se cryptolayer existe, descriptografa (linha 1205-1219)
-					# Se não existe, usa os dados como estão (linha 1220)
-					if self.cryptolayer is not None:
-						print('🔓 Descriptografando com cryptolayer...')
-						sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-						if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-							orig_data = user_data[12:]
-							user_data = self.cryptolayer.client_dec(orig_data)
-							print(f'✅ Descriptografado: {len(user_data)} bytes')
-					else:
-						print('⚠️ Sem cryptolayer - dados devem estar em claro')
-						# MAS: pode ter security header vazio de 4 bytes!
-						# Vamos verificar se os primeiros 4 bytes parecem ser security header
-						if len(user_data) > 4:
-							# Tentar detectar security header vazio (flags=0x0008, flagsHi=0x0000)
-							# Hex típico: 08 00 00 00 (4 bytes)
-							first_bytes = user_data[:4]
-							print(f'🔍 Primeiros 4 bytes: {first_bytes.hex()}')
-							
-							# Se começa com 08 00, provavelmente é security header básico
-							if first_bytes[0] == 0x08 and first_bytes[1] == 0x00:
-								print('⚠️ Detectado security header básico (4 bytes) - removendo')
-								user_data = user_data[4:]
-								print(f'📦 Dados após remover header: {len(user_data)} bytes')
-								print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
-					
-					# Agora user_data deve estar pronto para ser processado
-					# Recolocar na fila MCS
-					print(f'\n🔄 Recolocando {len(user_data)} bytes na fila MCS...')
-					print(f'📝 Hex final (40 primeiros): {user_data[:40].hex()}')
-					
-					# TENTAR PARSEAR PARA CONFIRMAR
-					from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
-					try:
-						shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
-						print(f'✅ Pré-validação: pduType = {shc.pduType.name}')
-					except Exception as e:
-						print(f'⚠️ Pré-validação falhou: {e}')
-					
-					await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-
+			if self.cryptolayer is not None:
+				print('🔓 Descriptografando com cryptolayer...')
+				sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
+				if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+					orig_data = user_data[12:]
+					user_data = self.cryptolayer.client_dec(orig_data)
+					print(f'✅ Descriptografado: {len(user_data)} bytes')
+			else:
+				print('⚠️ Sem cryptolayer - dados devem estar em claro')
+				# Security header básico sempre tem 4 bytes
+				# Se o primeiro byte é 0x08, é security header
+				if len(user_data) > 4 and user_data[0] == 0x08:
+					print(f'🔍 Detectado security header (primeiro byte = 0x08)')
+					print(f'   Primeiros 4 bytes: {user_data[:4].hex()}')
+					print('⚠️ Removendo security header (4 bytes)...')
+					user_data = user_data[4:]
+					print(f'📦 Dados após remover header: {len(user_data)} bytes')
+					print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
+				else:
+					print(f'⚠️ Não detectado security header (primeiro byte = 0x{user_data[0]:02x})')
 			print('\n✅ License handling concluído\n')
 			return True, None
 			
