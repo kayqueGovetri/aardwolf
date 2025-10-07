@@ -768,97 +768,54 @@ class RDPConnection:
 				print(f'📏 Dados extras: {len(remaining)} bytes')
 				
 				if len(remaining) > 10:
-					print(f'\n⚠️ Há {len(remaining)} bytes extras (userData)!')
-					print(f'📝 Hex (40 primeiros): {remaining[:40].hex()}')
+					print(f'\n⚠️ Há {len(remaining)} bytes extras!')
+					print(f'📝 Hex (60 primeiros): {remaining[:60].hex()}')
+					
+					# PROCESSAR EXATAMENTE COMO __x224_reader() faz (linha 1203-1220)
+					# Os dados extras são userData que pode ter security header
 					
 					user_data = remaining
 					
+					# Se cryptolayer existe, descriptografa (linha 1205-1219)
+					# Se não existe, usa os dados como estão (linha 1220)
 					if self.cryptolayer is not None:
-						print('🔓 Descriptografando userData...')
+						print('🔓 Descriptografando com cryptolayer...')
 						sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-						print(f'🔐 Security flags: {sec_hdr.flags}')
-						
 						if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-							orig_data = user_data[12:]  # Pula security header (12 bytes)
-							decrypted = self.cryptolayer.client_dec(orig_data)
-							print(f'✅ Descriptografado: {len(decrypted)} bytes')
-							print(f'📝 Hex (40 primeiros): {decrypted[:40].hex()}')
-							
-							# PARSEAR COMO TS_SHARECONTROLHEADER
-							from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
-							
-							try:
-								shc = TS_SHARECONTROLHEADER.from_bytes(decrypted)
-								print(f'\n🎉 pduType = {shc.pduType.name}')
-								
-								if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-									print('✅✅✅ É DEMANDACTIVEPDU!')
-								
-								# Recolocar dados DESCRIPTOGRAFADOS na fila
-								print('🔄 Recolocando dados descriptografados na fila MCS...')
-								await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-								
-							except Exception as e:
-								print(f'❌ Erro parse: {e}')
-								# Tentar com offset 4
-								try:
-									shc = TS_SHARECONTROLHEADER.from_bytes(decrypted[4:])
-									print(f'\n🎉 pduType (offset 4) = {shc.pduType.name}')
-									await self.__joined_channels['MCS'].out_queue.put((decrypted[4:], None))
-								except:
-									await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
-						else:
-							print('⚠️ userData não está criptografado')
-							await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+							orig_data = user_data[12:]
+							user_data = self.cryptolayer.client_dec(orig_data)
+							print(f'✅ Descriptografado: {len(user_data)} bytes')
 					else:
-						# SEM CRYPTOLAYER: Verificar se há security header mesmo assim
-						print('⚠️ Sem cryptolayer, verificando security header...')
-						
-						try:
-							from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
+						print('⚠️ Sem cryptolayer - dados devem estar em claro')
+						# MAS: pode ter security header vazio de 4 bytes!
+						# Vamos verificar se os primeiros 4 bytes parecem ser security header
+						if len(user_data) > 4:
+							# Tentar detectar security header vazio (flags=0x0008, flagsHi=0x0000)
+							# Hex típico: 08 00 00 00 (4 bytes)
+							first_bytes = user_data[:4]
+							print(f'🔍 Primeiros 4 bytes: {first_bytes.hex()}')
 							
-							sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-							print(f'🔐 Security header detectado: flags={sec_hdr.flags}')
-							
-							if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-								# Tem security header de 12 bytes (4 flags + 8 signature)
-								print('⚠️ Dados têm security header ENCRYPT (12 bytes) - pulando')
-								actual_data = user_data[12:]
-							else:
-								# Tem security header de 4 bytes (só flags)
-								print('⚠️ Dados têm security header básico (4 bytes) - pulando')
-								actual_data = user_data[4:]
-							
-							print(f'📦 Dados após pular security header: {len(actual_data)} bytes')
-							print(f'📝 Hex (40 primeiros): {actual_data[:40].hex()}')
-							
-							# TENTAR PARSEAR COMO TS_SHARECONTROLHEADER
-							try:
-								shc = TS_SHARECONTROLHEADER.from_bytes(actual_data)
-								print(f'\n🎉 pduType = {shc.pduType.name}')
-								
-								if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-									print('✅✅✅ É DEMANDACTIVEPDU!')
-								
-								print('🔄 Recolocando dados (sem security header) na fila MCS...')
-								await self.__joined_channels['MCS'].out_queue.put((actual_data, None))
-								
-							except Exception as e:
-								print(f'❌ Erro parse com offset 0: {e}')
-								# Tentar com offset 4 adicional
-								try:
-									shc = TS_SHARECONTROLHEADER.from_bytes(actual_data[4:])
-									print(f'\n🎉 pduType (offset +4) = {shc.pduType.name}')
-									await self.__joined_channels['MCS'].out_queue.put((actual_data[4:], None))
-								except Exception as e2:
-									print(f'❌ Erro parse com offset 4: {e2}')
-									print('⚠️ Recolocando dados após security header...')
-									await self.__joined_channels['MCS'].out_queue.put((actual_data, None))
-						
-						except Exception as e:
-							print(f'❌ Erro ao processar security header: {e}')
-							print('⚠️ Recolocando dados brutos (sem modificação)...')
-							await self.__joined_channels['MCS'].out_queue.put((remaining, None))
+							# Se começa com 08 00, provavelmente é security header básico
+							if first_bytes[0] == 0x08 and first_bytes[1] == 0x00:
+								print('⚠️ Detectado security header básico (4 bytes) - removendo')
+								user_data = user_data[4:]
+								print(f'📦 Dados após remover header: {len(user_data)} bytes')
+								print(f'📝 Hex (40 primeiros): {user_data[:40].hex()}')
+					
+					# Agora user_data deve estar pronto para ser processado
+					# Recolocar na fila MCS
+					print(f'\n🔄 Recolocando {len(user_data)} bytes na fila MCS...')
+					print(f'📝 Hex final (40 primeiros): {user_data[:40].hex()}')
+					
+					# TENTAR PARSEAR PARA CONFIRMAR
+					from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
+					try:
+						shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
+						print(f'✅ Pré-validação: pduType = {shc.pduType.name}')
+					except Exception as e:
+						print(f'⚠️ Pré-validação falhou: {e}')
+					
+					await self.__joined_channels['MCS'].out_queue.put((user_data, None))
 
 			print('\n✅ License handling concluído\n')
 			return True, None
@@ -871,7 +828,7 @@ class RDPConnection:
 			return None, e
 
 	async def __handle_mandatory_capability_exchange(self):
-		try:
+		try:	
 			print('\n===== AGUARDANDO DEMANDACTIVEPDU =====')
 			# waiting for server to demand active pdu and inside send its capabilities
 			data_start_offset = 0
