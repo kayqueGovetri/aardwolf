@@ -434,8 +434,9 @@ class RDPConnection:
 			# from here on it matters
 
 			ud_core.keyboardLayout = self.iosettings.keyboard_layout
-			ud_core.clientBuild = 2600
-			ud_core.clientName = 'aardwolf'
+			ud_core.clientBuild = 10240
+			ud_core.clientProductId = 338
+			ud_core.clientName = 'ws22-rds'
 			ud_core.imeFileName = ''
 			#ud_core.postBeta2ColorDepth = COLOR_DEPTH.COLOR_8BPP
 			if self.iosettings.video_bpp_min == 4:
