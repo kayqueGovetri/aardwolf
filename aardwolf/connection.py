@@ -834,15 +834,43 @@ class RDPConnection:
 				print(f'\n📦 Dados extras detectados: {len(remaining)} bytes')
 				print(f'📝 Hex: {remaining[:40].hex()}')
 				
-				# Verificar se começa com 0x08 (ASN.1 OCTET STRING - dados criptografados)
+				# Verificar se começa com 0x08 (ASN.1 OCTET STRING - certificado de licença)
 				if remaining[0] == 0x08:
-					print('⚠️ Dados extras são certificados/licenciamento criptografados (ASN.1)')
-					print('⚠️ Sem cryptolayer para descriptografar - ignorando')
-					print('✅ DEMANDACTIVEPDU virá em próximo pacote MCS')
+					print('⚠️ Dados extras começam com certificado ASN.1')
+					
+					# Pular o certificado ASN.1 para encontrar o PDU RDP
+					# 0x08 = OCTET STRING tag
+					# Próximo byte(s) = tamanho
+					offset = 1
+					length_byte = remaining[offset]
+					
+					if length_byte & 0x80:  # Long form
+						num_bytes = length_byte & 0x7F
+						offset += 1
+						cert_length = int.from_bytes(remaining[offset:offset+num_bytes], 'big')
+						offset += num_bytes
+					else:  # Short form
+						cert_length = length_byte
+						offset += 1
+					
+					# Pular o certificado
+					offset += cert_length
+					print(f'📏 Certificado ASN.1: {cert_length} bytes (offset={offset})')
+					
+					# Verificar se há dados RDP após o certificado
+					if offset < len(remaining):
+						user_data = remaining[offset:]
+						print(f'📦 Dados RDP após certificado: {len(user_data)} bytes')
+						print(f'📝 Hex: {user_data[:40].hex()}')
+					else:
+						print('⚠️ Sem dados RDP após certificado')
+						user_data = None
 				else:
 					# Tentar processar como userData
 					user_data = remaining
-					
+				
+				# Processar user_data se existir
+				if user_data is not None and len(user_data) > 0:
 					# Descriptografar se tiver cryptolayer
 					if self.cryptolayer is not None:
 						from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
@@ -863,7 +891,7 @@ class RDPConnection:
 						print(f'✅ PDU tipo: {shc.pduType.name}')
 						
 						if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-							print('🎉 DEMANDACTIVEPDU nos dados extras!')
+							print('🎉🎉🎉 DEMANDACTIVEPDU ENCONTRADO nos dados extras!')
 							await self.__joined_channels['MCS'].out_queue.put((user_data, None))
 							return True, None
 						elif shc.pduType == PDUTYPE.DATAPDU:
