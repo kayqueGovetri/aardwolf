@@ -769,45 +769,58 @@ class RDPConnection:
 			print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
 			print(f'📏 Dados extras: {len(remaining)} bytes')
 			
-			# Processar dados extras se existirem
+			# Processar dados extras se existirem (são userData direto, não MCS PDU)
 			if len(remaining) > 10:
 				print(f'\n📦 Processando dados extras do mesmo pacote...')
 				print(f'📝 Hex: {remaining[:40].hex()}')
 				
+				# Os dados extras são userData direto, não precisam decodificar MCS
+				user_data = remaining
+				
+				# Descriptografar se necessário
+				if self.cryptolayer is not None:
+					from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
+					try:
+						sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
+						print(f'🔐 Security flags: {sec_hdr.flags}')
+						
+						if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+							print('🔓 Descriptografando...')
+							orig_data = user_data[12:]
+							user_data = self.cryptolayer.client_dec(orig_data)
+							print(f'✅ Descriptografado: {len(user_data)} bytes')
+							print(f'📝 Hex descriptografado: {user_data[:40].hex()}')
+					except Exception as e:
+						print(f'⚠️ Sem security header ou não criptografado: {e}')
+				
+				# Tentar parsear como PDU RDP
+				from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE, TS_SHAREDATAHEADER, PDUTYPE2
+				
 				try:
-					extra_pdu = self._t125_per_codec.decode('DomainMCSPDU', remaining)
-					print(f'📋 Tipo: {extra_pdu[0]}')
+					shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
+					print(f'✅ PDU tipo: {shc.pduType.name}')
 					
-					if extra_pdu[0] == 'sendDataIndication':
-						user_data = extra_pdu[1]['userData']
+					if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
+						print('🎉🎉🎉 DEMANDACTIVEPDU encontrado nos dados extras!')
+						await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+						print('✅ License handling concluído (DEMANDACTIVEPDU na fila)\n')
+						return True, None
+					
+					elif shc.pduType == PDUTYPE.DATAPDU:
+						shd = TS_SHAREDATAHEADER.from_bytes(user_data)
+						print(f'📋 DATAPDU tipo: {shd.pduType2.name}')
 						
-						if self.cryptolayer is not None:
-							from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
-							try:
-								sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-								if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-									user_data = self.cryptolayer.client_dec(user_data[12:])
-									print(f'✅ Descriptografado: {len(user_data)} bytes')
-							except:
-								pass
+						if shd.pduType2 == PDUTYPE2.SAVE_SESSION_INFO:
+							print('✅ Server Save Session Info recebido')
+							# Continuar aguardando DEMANDACTIVEPDU
+						else:
+							print(f'⚠️ DATAPDU inesperado: {shd.pduType2.name}')
+					else:
+						print(f'⚠️ PDU inesperado: {shc.pduType.name}')
 						
-						from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE, TS_SHAREDATAHEADER, PDUTYPE2
-						
-						try:
-							shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
-							print(f'✅ PDU: {shc.pduType.name}')
-							
-							if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-								print('🎉 DEMANDACTIVEPDU nos dados extras!')
-								await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-								return True, None
-							elif shc.pduType == PDUTYPE.DATAPDU:
-								shd = TS_SHAREDATAHEADER.from_bytes(user_data)
-								print(f'📋 DATAPDU: {shd.pduType2.name}')
-						except Exception as e:
-							print(f'⚠️ Erro parsear: {e}')
 				except Exception as e:
-					print(f'⚠️ Erro decodificar extras: {e}')
+					print(f'⚠️ Erro ao parsear userData: {e}')
+					print('⚠️ Dados extras não são PDU RDP válido')
 			
 			# AGORA: Aguardar e processar PDUs adicionais que o servidor pode enviar
 			# (Server Save Session Info, Auto-Reconnect Status, etc.)
