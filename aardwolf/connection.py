@@ -842,6 +842,49 @@ class RDPConnection:
 					except Exception as e:
 						print(f'⚠️ Não é PDU RDP válido: {e}')
 			
+			# CRITICAL: Enviar Client Synchronize PDU para "acordar" o servidor
+			# O servidor RDS aguarda este PDU antes de enviar DEMANDACTIVEPDU
+			print('\n📤 Enviando Client Synchronize PDU para acordar servidor...')
+			
+			from aardwolf.protocol.T128.share import TS_SYNCHRONIZE_PDU, TS_SHARECONTROLHEADER, PDUTYPE
+			from aardwolf.protocol.T128.share import TS_SHAREDATAHEADER, PDUTYPE2, STREAM_TYPE
+			from aardwolf.protocol.T128.security import TS_SECURITY_HEADER, SEC_HDR_FLAG
+			
+			# Criar SYNCHRONIZE PDU
+			sync_pdu = TS_SYNCHRONIZE_PDU()
+			sync_pdu.messageType = 1  # SYNCMSGTYPE_SYNC
+			sync_pdu.targetUser = self.__joined_channels['MCS'].channel_id
+			
+			# Criar Share Data Header
+			shd = TS_SHAREDATAHEADER()
+			shd.shareID = 0  # Will be set after we receive DEMANDACTIVEPDU
+			shd.streamID = STREAM_TYPE.LOW
+			shd.pduType2 = PDUTYPE2.SYNCHRONIZE
+			shd.compressedType = 0
+			shd.compressedLength = 0
+			shd.uncompressedLength = len(sync_pdu.toBytes()) + 18
+			
+			# Criar Share Control Header
+			shc = TS_SHARECONTROLHEADER()
+			shc.pduType = PDUTYPE.DATAPDU
+			shc.pduSource = self.__joined_channels['MCS'].channel_id
+			shc.totalLength = len(shd.toBytes()) + len(sync_pdu.toBytes()) + 6
+			
+			# Montar PDU completo
+			pdu_data = shc.toBytes() + shd.toBytes() + sync_pdu.toBytes()
+			
+			# Criar Security Header (sem criptografia para RDS)
+			sec_hdr = TS_SECURITY_HEADER()
+			sec_hdr.flags = 0  # Sem criptografia
+			sec_hdr.flagsHi = 0
+			
+			# Enviar via MCS
+			await self.handle_out_data(pdu_data, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+			print('✅ Client Synchronize PDU enviado!')
+			
+			# Aguardar um pouco para o servidor processar
+			await asyncio.sleep(0.1)
+			
 			# AGORA: Aguardar e processar PDUs adicionais que o servidor pode enviar
 			# (Server Save Session Info, Auto-Reconnect Status, etc.)
 			print('\n🔄 Aguardando PDUs adicionais do servidor...')
