@@ -435,7 +435,7 @@ class RDPConnection:
 
 			ud_core.keyboardLayout = self.iosettings.keyboard_layout
 			ud_core.clientBuild = 2600
-			ud_core.clientName = 'aardworlf'
+			ud_core.clientName = 'aardwolf'
 			ud_core.imeFileName = ''
 			#ud_core.postBeta2ColorDepth = COLOR_DEPTH.COLOR_8BPP
 			if self.iosettings.video_bpp_min == 4:
@@ -477,9 +477,21 @@ class RDPConnection:
 				elif sc == 32:
 					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_32BPP_SUPPORT
 			
-			ud_core.earlyCapabilityFlags = RNS_UD_CS.SUPPORT_ERRINFO_PDU
+			# RDS requires multiple capability flags for proper connection
+			ud_core.earlyCapabilityFlags = (
+				RNS_UD_CS.SUPPORT_ERRINFO_PDU |           # 0x0001 - Set Error Info PDU support (REQUIRED)
+				RNS_UD_CS.WANT_32BPP_SESSION |            # 0x0002 - Request 32bpp session
+				RNS_UD_CS.SUPPORT_STATUSINFO_PDU |        # 0x0004 - Server Status Info PDU
+				RNS_UD_CS.STRONG_ASYMMETRIC_KEYS |        # 0x0008 - Support keys > 512 bits
+				RNS_UD_CS.VALID_CONNECTION_TYPE |         # 0x0020 - connectionType field valid
+				RNS_UD_CS.SUPPORT_MONITOR_LAYOUT_PDU |    # 0x0040 - Monitor Layout PDU
+				RNS_UD_CS.SUPPORT_NETCHAR_AUTODETECT |    # 0x0080 - Network auto-detect (CRITICAL for RDS)
+				RNS_UD_CS.SUPPORT_DYNVC_GFX_PROTOCOL |    # 0x0100 - Graphics Pipeline (may be needed)
+				RNS_UD_CS.SUPPORT_DYNAMIC_TIME_ZONE |     # 0x0200 - Dynamic DST
+				RNS_UD_CS.SUPPORT_HEARTBEAT_PDU           # 0x0400 - Heartbeat PDU (keeps connection alive)
+			)
 			ud_core.clientDigProductId = b'\x00' * 64
-			ud_core.connectionType = CONNECTION_TYPE.UNK
+			ud_core.connectionType = CONNECTION_TYPE.LAN  # Changed from UNK to LAN
 			ud_core.pad1octet = b'\x00'
 			ud_core.serverSelectedProtocol = self.x224_protocol
 			
