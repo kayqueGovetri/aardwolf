@@ -705,13 +705,13 @@ class RDPConnection:
 			extinfo.clientAddress = '127.0.0.1'
 			extinfo.clientDir = 'C:\\Windows\\System32\\mstscax.dll'
 			extinfo.clientTimeZone = systz
-			extinfo.clientSessionId = 3
+			# extinfo.clientSessionId = 3
 			if self.iosettings.performance_flags is not None:
 				extinfo.performanceFlags = self.iosettings.performance_flags
 
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
-			info.flags = INFO_FLAG.ENABLEWINDOWSKEY|INFO_FLAG.MAXIMIZESHELL|INFO_FLAG.UNICODE|INFO_FLAG.DISABLECTRLALTDEL|INFO_FLAG.MOUSE|INFO_FLAG.LOGONNOTIFY
+			info.flags = INFO_FLAG.ENABLEWINDOWSKEY|INFO_FLAG.MAXIMIZESHELL|INFO_FLAG.UNICODE|INFO_FLAG.DISABLECTRLALTDEL|INFO_FLAG.MOUSE|INFO_FLAG.AUTOLOGON
 			info.Domain = ''
 			info.UserName = ''
 			info.Password = ''
