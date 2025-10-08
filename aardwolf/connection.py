@@ -724,7 +724,7 @@ class RDPConnection:
 					info.Password = self.credentials.secret
 			info.AlternateShell = '' 
 			info.WorkingDir = ''
-			# info.extrainfo = extinfo
+			info.extrainfo = extinfo
 
 			sec_hdr = TS_SECURITY_HEADER()
 			sec_hdr.flags = SEC_HDR_FLAG.INFO_PKT
