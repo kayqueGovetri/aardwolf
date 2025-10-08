@@ -846,7 +846,8 @@ class RDPConnection:
 			# O servidor RDS aguarda este PDU antes de enviar DEMANDACTIVEPDU
 			print('\n📤 Enviando Client Synchronize PDU para acordar servidor...')
 			
-			from aardwolf.protocol.T128.share import TS_SYNCHRONIZE_PDU, TS_SHARECONTROLHEADER, PDUTYPE
+			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
+			from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
 			from aardwolf.protocol.T128.share import TS_SHAREDATAHEADER, PDUTYPE2, STREAM_TYPE
 			from aardwolf.protocol.T128.security import TS_SECURITY_HEADER, SEC_HDR_FLAG
 			
@@ -862,16 +863,16 @@ class RDPConnection:
 			shd.pduType2 = PDUTYPE2.SYNCHRONIZE
 			shd.compressedType = 0
 			shd.compressedLength = 0
-			shd.uncompressedLength = len(sync_pdu.toBytes()) + 18
+			shd.uncompressedLength = len(sync_pdu.to_bytes()) + 18
 			
 			# Criar Share Control Header
 			shc = TS_SHARECONTROLHEADER()
 			shc.pduType = PDUTYPE.DATAPDU
 			shc.pduSource = self.__joined_channels['MCS'].channel_id
-			shc.totalLength = len(shd.toBytes()) + len(sync_pdu.toBytes()) + 6
+			shc.totalLength = len(shd.to_bytes()) + len(sync_pdu.to_bytes()) + 6
 			
 			# Montar PDU completo
-			pdu_data = shc.toBytes() + shd.toBytes() + sync_pdu.toBytes()
+			pdu_data = shc.to_bytes() + shd.to_bytes() + sync_pdu.to_bytes()
 			
 			# Criar Security Header (sem criptografia para RDS)
 			sec_hdr = TS_SECURITY_HEADER()
