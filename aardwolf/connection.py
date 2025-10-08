@@ -434,9 +434,8 @@ class RDPConnection:
 			# from here on it matters
 
 			ud_core.keyboardLayout = self.iosettings.keyboard_layout
-			ud_core.clientBuild = 10240
-			ud_core.clientProductId = 338
-			ud_core.clientName = 'ws22-rds'
+			ud_core.clientBuild = 2600
+			ud_core.clientName = 'aardwolf'
 			ud_core.imeFileName = ''
 			#ud_core.postBeta2ColorDepth = COLOR_DEPTH.COLOR_8BPP
 			if self.iosettings.video_bpp_min == 4:
@@ -478,19 +477,20 @@ class RDPConnection:
 				elif sc == 32:
 					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_32BPP_SUPPORT
 			
-			# RDS requires multiple capability flags for proper connection
+			# SIMPLIFIED: Use minimal capability flags like MSTSC does
+			# Testing hypothesis: RDS rejects connection due to unsupported advanced flags
 			ud_core.earlyCapabilityFlags = (
-				RNS_UD_CS.SUPPORT_ERRINFO_PDU |           # 0x0001 - Set Error Info PDU support (REQUIRED)
-				RNS_UD_CS.WANT_32BPP_SESSION |            # 0x0002 - Request 32bpp session
-				RNS_UD_CS.SUPPORT_STATUSINFO_PDU |        # 0x0004 - Server Status Info PDU
-				RNS_UD_CS.STRONG_ASYMMETRIC_KEYS |        # 0x0008 - Support keys > 512 bits
-				RNS_UD_CS.VALID_CONNECTION_TYPE |         # 0x0020 - connectionType field valid
-				RNS_UD_CS.SUPPORT_MONITOR_LAYOUT_PDU |    # 0x0040 - Monitor Layout PDU
-				RNS_UD_CS.SUPPORT_NETCHAR_AUTODETECT |    # 0x0080 - Network auto-detect (CRITICAL for RDS)
-				RNS_UD_CS.SUPPORT_DYNVC_GFX_PROTOCOL |    # 0x0100 - Graphics Pipeline (may be needed)
-				RNS_UD_CS.SUPPORT_DYNAMIC_TIME_ZONE |     # 0x0200 - Dynamic DST
-				RNS_UD_CS.SUPPORT_HEARTBEAT_PDU           # 0x0400 - Heartbeat PDU (keeps connection alive)
+				RNS_UD_CS.SUPPORT_ERRINFO_PDU |           # 0x0001 - REQUIRED for error reporting
+				RNS_UD_CS.WANT_32BPP_SESSION |            # 0x0002 - Request 32bpp
+				RNS_UD_CS.SUPPORT_STATUSINFO_PDU |        # 0x0004 - Status info
+				RNS_UD_CS.STRONG_ASYMMETRIC_KEYS          # 0x0008 - Strong keys
+				# REMOVED: NETCHAR_AUTODETECT (0x0080) - May cause RDS to reject
+				# REMOVED: DYNVC_GFX_PROTOCOL (0x0100) - Advanced graphics not needed
+				# REMOVED: MONITOR_LAYOUT (0x0040) - Not essential
+				# REMOVED: DYNAMIC_TIME_ZONE (0x0200) - Not essential
+				# REMOVED: HEARTBEAT (0x0400) - Not essential for initial connection
 			)
+			print(f'🧪 TESTING: Simplified earlyCapabilityFlags = 0x{ud_core.earlyCapabilityFlags:04X}')
 			ud_core.clientDigProductId = b'\x00' * 64
 			ud_core.connectionType = CONNECTION_TYPE.LAN  # Changed from UNK to LAN
 			ud_core.pad1octet = b'\x00'
@@ -741,7 +741,21 @@ class RDPConnection:
 
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
-			info.flags = INFO_FLAG.ENABLEWINDOWSKEY|INFO_FLAG.MAXIMIZESHELL|INFO_FLAG.UNICODE|INFO_FLAG.DISABLECTRLALTDEL|INFO_FLAG.MOUSE|INFO_FLAG.AUTOLOGON|INFO_FLAG.LOGONNOTIFY
+			
+			# TESTING: Simplify INFO_FLAG to match MSTSC behavior
+			# Hypothesis: Complex flags may cause RDS to reject connection
+			info.flags = (
+				INFO_FLAG.MOUSE |           # 0x00000001 - Mouse input
+				INFO_FLAG.UNICODE |         # 0x00000010 - Unicode strings
+				INFO_FLAG.AUTOLOGON |       # 0x00000008 - Auto logon
+				INFO_FLAG.LOGONNOTIFY |     # 0x00000040 - Notify on logon (REQUIRED for RDS)
+				INFO_FLAG.COMPRESSION       # 0x00000080 - Compression
+				# REMOVED: ENABLEWINDOWSKEY - May not be needed
+				# REMOVED: MAXIMIZESHELL - May not be needed
+				# REMOVED: DISABLECTRLALTDEL - May not be needed
+			)
+			print(f'🧪 TESTING: Simplified INFO_FLAG = 0x{info.flags:08X}')
+			
 			info.Domain = ''
 			info.UserName = ''
 			info.Password = ''
@@ -756,6 +770,8 @@ class RDPConnection:
 				# Enviar senha APENAS quando usando segurança RDP clássica (sem TLS/CredSSP)
 				if self.x224_protocol == SUPP_PROTOCOLS.RDP and self.credentials.secret is not None:
 					info.Password = self.credentials.secret
+			
+			print(f'📋 CLIENT_INFO_PDU: Domain="{info.Domain}", UserName="{info.UserName}", Protocol={self.x224_protocol}')
 			
 			info.AlternateShell = '' 
 			info.WorkingDir = ''
@@ -848,63 +864,51 @@ class RDPConnection:
 				print(f'📝 Hex (primeiros 40): {remaining[:40].hex()}')
 				print('⚠️ Dados extras são certificado de licença - ignorando')
 			
-			# CRITICAL: O servidor pode enviar DEMANDACTIVEPDU imediatamente após license!
-			# Evitar competir com o __x224_reader. Se o reader já estiver ativo, não faça leitura direta.
-			if self.__x224_reader_task is not None and self.__x224_reader_task.done() is False:
-				print('\nℹ️ __x224_reader ativo; não farei leitura direta. DEMANDACTIVEPDU virá via fila MCS.')
-			else:
-				print('\n🔄 Tentando ler DEMANDACTIVEPDU diretamente da conexão...')
+			# CRITICAL: Check if server sent anything after tokenInhibitConfirm
+			# Some servers coalesce tokenInhibitConfirm + sendDataIndication(DEMANDACTIVEPDU) in same frame
+			print('\n🔍 DIAGNOSTIC: Checking for coalesced PDUs after tokenInhibitConfirm...')
+			
+			# Check if there's more data in the same buffer after tokenInhibitConfirm
+			if len(remaining) > 10:
+				print(f'⚠️ WARNING: {len(remaining)} bytes remain after tokenInhibitConfirm - may contain DEMANDACTIVEPDU!')
+				print(f'📝 Remaining hex (first 60): {remaining[:60].hex()}')
+				
+				# Try to decode as DomainMCSPDU
 				try:
-					# Ler próximo pacote X224/MCS diretamente
-					response = await asyncio.wait_for(
-						self._x224net.read(),
-						timeout=3.0
-					)
+					extra_pdu = self._t125_per_codec.decode('DomainMCSPDU', remaining)
+					print(f'✅ Decoded extra PDU: {extra_pdu[0]}')
 					
-					if response is not None:
-						print(f'📦 Pacote recebido: {len(response.data)} bytes')
-						print(f'📝 Hex (primeiros 40): {response.data[:40].hex()}')
+					if extra_pdu[0] == 'sendDataIndication':
+						user_data = extra_pdu[1]['userData']
+						print(f'🎉 Found sendDataIndication with {len(user_data)} bytes userData!')
 						
-						# Decodificar MCS PDU
-						try:
-							mcs_pdu = self._t125_per_codec.decode('DomainMCSPDU', response.data)
-							print(f'📋 MCS PDU tipo: {mcs_pdu[0]}')
-							
-							if mcs_pdu[0] == 'sendDataIndication':
-								user_data = mcs_pdu[1]['userData']
-								print(f'📦 userData: {len(user_data)} bytes')
-								# Aplicar offset de 4 bytes quando encryptionLevel == 1 (cabeçalho de segurança vazio)
-								data_start_offset = 0
-								try:
-									if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
-										data_start_offset = 4
-								except Exception:
-									pass
-								raw = user_data[data_start_offset:]
-								# Tentar parsear como DEMANDACTIVEPDU
-								from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
-								try:
-									shc = TS_SHARECONTROLHEADER.from_bytes(raw)
-									print(f'✅ PDU tipo: {shc.pduType.name}')
-									
-									if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-										print('🎉🎉🎉 DEMANDACTIVEPDU RECEBIDO após license!')
-										# Colocar na fila para __handle_mandatory_capability_exchange processar
-										await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-										print('✅ DEMANDACTIVEPDU colocado na fila\n')
-										return True, None
-									else:
-										print(f'⚠️ PDU inesperado: {shc.pduType.name}')
-								except Exception as e:
-									print(f'⚠️ Erro ao parsear PDU: {e}')
-							else:
-								print('➡️ MCS PDU não é sendDataIndication, ignorando leitura direta')
-						except Exception as e:
-							print(f'⚠️ Erro ao decodificar MCS: {e}')
-					else:
-						print('⚠️ Nenhum pacote recebido')
+						# Put in MCS queue for __handle_mandatory_capability_exchange
+						await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+						print('✅ Coalesced DEMANDACTIVEPDU placed in MCS queue\n')
+						return True, None
+				except Exception as e:
+					print(f'⚠️ Failed to decode remaining data as MCS PDU: {e}')
+			
+			# If __x224_reader is active, DEMANDACTIVEPDU will come via queue
+			if self.__x224_reader_task is not None and self.__x224_reader_task.done() is False:
+				print('ℹ️ __x224_reader active - DEMANDACTIVEPDU will arrive via MCS queue')
+			else:
+				print('⚠️ WARNING: __x224_reader NOT active - may miss DEMANDACTIVEPDU!')
+				print('🔄 Attempting direct read from connection...')
+				try:
+					response = await asyncio.wait_for(self._x224net.read(), timeout=3.0)
+					if response is not None:
+						print(f'📦 Direct read: {len(response.data)} bytes')
+						print(f'📝 Hex: {response.data[:60].hex()}')
+						
+						mcs_pdu = self._t125_per_codec.decode('DomainMCSPDU', response.data)
+						print(f'📋 MCS PDU: {mcs_pdu[0]}')
+						
+						if mcs_pdu[0] == 'sendDataIndication':
+							await self.__joined_channels['MCS'].out_queue.put((mcs_pdu[1]['userData'], None))
+							print('✅ Direct-read PDU placed in MCS queue')
 				except asyncio.TimeoutError:
-					print('⏱ Timeout - servidor não enviou DEMANDACTIVEPDU após license')
+					print('⏱ Timeout on direct read - server may not send DEMANDACTIVEPDU yet')
 			
 			print('\n✅ License handling concluído\n')
 			return True, None
