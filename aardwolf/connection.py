@@ -866,13 +866,30 @@ class RDPConnection:
 						
 						# DEMANDACTIVEPDU = 0x01, tamanho razoável entre 100 e 5000 bytes
 						if potential_type == 0x01 and 100 < potential_length < 5000:
-							print(f'🔍 DEMANDACTIVEPDU encontrado no offset {i}!')
-							print(f'📏 totalLength: {potential_length} bytes')
-							print(f'📏 pduType: 0x{potential_type:02x} (DEMANDACTIVEPDU)')
-							user_data = remaining[i:]
-							print(f'📦 Dados RDP extraídos: {len(user_data)} bytes')
-							print(f'📝 Hex: {user_data[:40].hex()}')
-							break
+							# Validação adicional: verificar se o tamanho bate com os dados disponíveis
+							remaining_bytes = len(remaining) - i
+							if potential_length <= remaining_bytes:
+								print(f'🔍 DEMANDACTIVEPDU encontrado no offset {i}!')
+								print(f'📏 totalLength: {potential_length} bytes')
+								print(f'📏 pduType: 0x{potential_type:02x} (DEMANDACTIVEPDU)')
+								print(f'📏 Bytes disponíveis: {remaining_bytes}')
+								
+								# Tentar parsear para validar
+								try:
+									from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER
+									test_parse = TS_SHARECONTROLHEADER.from_bytes(remaining[i:i+6])
+									print(f'✅ Validação: PDU parseado com sucesso!')
+									print(f'   - totalLength: {test_parse.totalLength}')
+									print(f'   - pduType: {test_parse.pduType.name}')
+									print(f'   - pduSource: {test_parse.pduSource}')
+									
+									user_data = remaining[i:]
+									print(f'📦 Dados RDP extraídos: {len(user_data)} bytes')
+									print(f'📝 Hex: {user_data[:40].hex()}')
+									break
+								except Exception as e:
+									print(f'⚠️ Falha na validação no offset {i}: {e}')
+									continue
 					
 					if user_data is None:
 						print('⚠️ Não foi possível encontrar início de PDU RDP')
