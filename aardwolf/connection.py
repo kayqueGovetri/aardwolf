@@ -840,6 +840,17 @@ class RDPConnection:
 				print(f'\n📦 Dados extras detectados: {len(remaining)} bytes')
 				print(f'📝 Hex: {remaining[:40].hex()}')
 				
+				# HEXDUMP COMPLETO para análise
+				print('\n' + '='*80)
+				print('HEXDUMP COMPLETO DOS DADOS EXTRAS (primeiros 500 bytes):')
+				print('='*80)
+				dump_size = min(500, len(remaining))
+				for offset in range(0, dump_size, 16):
+					hex_part = ' '.join(f'{b:02x}' for b in remaining[offset:offset+16])
+					ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in remaining[offset:offset+16])
+					print(f'{offset:04x}  {hex_part:<48}  {ascii_part}')
+				print('='*80 + '\n')
+				
 				# Verificar se começa com 0x08 (ASN.1 OCTET STRING - certificado de licença)
 				if remaining[0] == 0x08:
 					print('⚠️ Dados extras começam com 0x08 (possível certificado ASN.1)')
