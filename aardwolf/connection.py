@@ -709,6 +709,7 @@ class RDPConnection:
 
 	async def __send_userdata(self):
 		try:
+			print('\n===== SEND USERDATA (CLIENT_INFO_PDU) =====')
 			systime = TS_SYSTEMTIME()
 			systime.wYear = 0
 			systime.wMonth = 10
@@ -760,7 +761,38 @@ class RDPConnection:
 				sec_hdr.flags |= SEC_HDR_FLAG.ENCRYPT
 			sec_hdr.flagsHi = 0
 
+			print(f'📤 Enviando CLIENT_INFO_PDU (Domain={info.Domain}, User={info.UserName})')
 			await self.handle_out_data(info, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+			print('✅ CLIENT_INFO_PDU enviado!')
+			
+			# CRITICAL: Aguardar resposta do servidor ANTES de processar license
+			print('\n🔄 Aguardando resposta do servidor ao CLIENT_INFO_PDU...')
+			try:
+				data, err = await asyncio.wait_for(
+					self.__joined_channels['MCS'].out_queue.get(),
+					timeout=2.0
+				)
+				if err is not None:
+					raise err
+				
+				print(f'📦 Resposta recebida: {len(data)} bytes')
+				print(f'📝 Hex (primeiros 40): {data[:40].hex()}')
+				
+				# Tentar decodificar
+				try:
+					mcs_pdu = self._t125_per_codec.decode('DomainMCSPDU', data)
+					print(f'📋 MCS PDU tipo: {mcs_pdu[0]}')
+					
+					# Recolocar na fila para __handle_license processar
+					await self.__joined_channels['MCS'].out_queue.put((data, None))
+					print('✅ Resposta recolocada na fila para license handler')
+				except Exception as e:
+					print(f'⚠️ Erro ao decodificar resposta: {e}')
+					# Recolocar mesmo assim
+					await self.__joined_channels['MCS'].out_queue.put((data, None))
+			except asyncio.TimeoutError:
+				print('⏱ Timeout - servidor não respondeu ao CLIENT_INFO_PDU')
+			
 			return True, None
 		except Exception as e:
 			return None, e
@@ -842,52 +874,20 @@ class RDPConnection:
 					except Exception as e:
 						print(f'⚠️ Não é PDU RDP válido: {e}')
 			
-			# CRITICAL: Enviar Client Synchronize PDU para "acordar" o servidor
-			# O servidor RDS aguarda este PDU antes de enviar DEMANDACTIVEPDU
-			print('\n📤 Enviando Client Synchronize PDU para acordar servidor...')
-			
-			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
-			from aardwolf.protocol.T128.share import TS_SHAREDATAHEADER, PDUTYPE2, STREAM_TYPE
-			from aardwolf.protocol.T128.security import TS_SECURITY_HEADER, SEC_HDR_FLAG
-			
-			# Criar Share Data Header (seguindo o padrão do código)
-			data_hdr = TS_SHAREDATAHEADER()
-			data_hdr.shareID = 0x103EA  # Padrão usado no código
-			data_hdr.streamID = STREAM_TYPE.LOW
-			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
-			
-			# Criar SYNCHRONIZE PDU
-			cli_sync = TS_SYNCHRONIZE_PDU()
-			cli_sync.messageType = 1  # SYNCMSGTYPE_SYNC
-			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
-			
-			# Criar Security Header (sem criptografia para RDS)
-			sec_hdr = None
-			if self.cryptolayer is not None:
-				sec_hdr = TS_SECURITY_HEADER()
-				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
-				sec_hdr.flagsHi = 0
-			
-			# Enviar via MCS (seguindo o padrão exato do código)
-			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
-			print('✅ Client Synchronize PDU enviado!')
-			
-			# Aguardar um pouco para o servidor processar
-			await asyncio.sleep(0.1)
-			
-			# AGORA: Aguardar e processar PDUs adicionais que o servidor pode enviar
+			# CRITICAL: NÃO enviar nada aqui! O servidor RDS envia DEMANDACTIVEPDU espontaneamente
+			# Apenas aguardar PDUs do servidor
 			# (Server Save Session Info, Auto-Reconnect Status, etc.)
 			print('\n🔄 Aguardando PDUs adicionais do servidor...')
 			
 			pdus_processados = 0
-			max_pdus = 5  # Processar até 5 PDUs adicionais
+			max_pdus = 10  # Processar até 10 PDUs adicionais
 			
 			while pdus_processados < max_pdus:
 				try:
-					# Aguardar próximo PDU com timeout curto
+					# Aguardar próximo PDU com timeout maior para RDS
 					data, err = await asyncio.wait_for(
 						self.__joined_channels['MCS'].out_queue.get(),
-						timeout=1.0  # 1 segundo entre PDUs
+						timeout=3.0  # 3 segundos entre PDUs (RDS pode demorar mais)
 					)
 					if err is not None:
 						raise err
