@@ -842,38 +842,30 @@ class RDPConnection:
 				
 				# Verificar se começa com 0x08 (ASN.1 OCTET STRING - certificado de licença)
 				if remaining[0] == 0x08:
-					print('⚠️ Dados extras começam com certificado ASN.1')
+					print('⚠️ Dados extras começam com 0x08 (possível certificado ASN.1)')
+					print(f'📝 Primeiros 50 bytes: {remaining[:50].hex()}')
 					
-					# Pular o certificado ASN.1 para encontrar o PDU RDP
-					# 0x08 = OCTET STRING tag
-					# Próximo byte(s) = tamanho
-					offset = 1
-					length_byte = remaining[offset]
+					# Procurar pelo padrão de início de PDU RDP: 02 00 ou 03 00 (PDUTYPE)
+					# PDU RDP geralmente começa com totalLength (2 bytes) + pduType (2 bytes)
+					user_data = None
+					for i in range(len(remaining) - 4):
+						# Procurar por padrão que parece início de PDU
+						if remaining[i:i+2] == b'\x02\x00' or remaining[i:i+2] == b'\x03\x00':
+							# Verificar se o próximo valor parece um tamanho razoável
+							potential_length = int.from_bytes(remaining[i+2:i+4], byteorder='little', signed=False)
+							if 20 < potential_length < 5000:  # Tamanho razoável para um PDU
+								print(f'🔍 Possível início de PDU encontrado no offset {i}')
+								print(f'📏 Tamanho potencial: {potential_length} bytes')
+								user_data = remaining[i:]
+								print(f'📦 Dados RDP extraídos: {len(user_data)} bytes')
+								print(f'📝 Hex: {user_data[:40].hex()}')
+								break
 					
-					if length_byte & 0x80:  # Long form
-						num_bytes = length_byte & 0x7F
-						offset += 1
-						# Big-endian para ASN.1
-						cert_length = int.from_bytes(remaining[offset:offset+num_bytes], byteorder='big', signed=False)
-						offset += num_bytes
-						print(f'📏 ASN.1 Long form: {num_bytes} bytes de tamanho = {cert_length}')
-					else:  # Short form
-						cert_length = length_byte
-						offset += 1
-						print(f'📏 ASN.1 Short form: tamanho = {cert_length}')
-					
-					# Pular o certificado
-					offset += cert_length
-					print(f'📏 Total offset após certificado: {offset} bytes')
-					
-					# Verificar se há dados RDP após o certificado
-					if offset < len(remaining):
-						user_data = remaining[offset:]
-						print(f'📦 Dados RDP após certificado: {len(user_data)} bytes')
-						print(f'📝 Hex: {user_data[:40].hex()}')
-					else:
-						print('⚠️ Sem dados RDP após certificado')
-						user_data = None
+					if user_data is None:
+						print('⚠️ Não foi possível encontrar início de PDU RDP')
+						# Tentar processar tudo após o 0x08 como possível PDU
+						user_data = remaining[1:]
+						print(f'📦 Tentando processar {len(user_data)} bytes após 0x08')
 				else:
 					# Tentar processar como userData
 					user_data = remaining
