@@ -744,13 +744,19 @@ class RDPConnection:
 			info.Domain = ''
 			info.UserName = ''
 			info.Password = ''
-			if self.authapi is None or SUPP_PROTOCOLS.SSL in self.x224_protocol:
+			
+			# CRITICAL: Para HYBRID/HYBRID_EX, as credenciais já foram enviadas via CredSSP
+			# MAS ainda precisamos preencher Domain/UserName no CLIENT_INFO_PDU para RDS!
+			if self.credentials is not None:
 				if self.credentials.domain is not None:
 					info.Domain = self.credentials.domain
 				if self.credentials.username is not None:
 					info.UserName = self.credentials.username
-				if self.credentials.secret is not None:
-					info.Password = self.credentials.secret
+				# Para HYBRID_EX, não enviar senha novamente (já foi via CredSSP)
+				if self.authapi is None or SUPP_PROTOCOLS.SSL in self.x224_protocol:
+					if self.credentials.secret is not None:
+						info.Password = self.credentials.secret
+			
 			info.AlternateShell = '' 
 			info.WorkingDir = ''
 			info.extrainfo = extinfo
@@ -761,7 +767,7 @@ class RDPConnection:
 				sec_hdr.flags |= SEC_HDR_FLAG.ENCRYPT
 			sec_hdr.flagsHi = 0
 
-			print(f'📤 Enviando CLIENT_INFO_PDU (Domain={info.Domain}, User={info.UserName})')
+			print(f'📤 Enviando CLIENT_INFO_PDU (Domain="{info.Domain}", User="{info.UserName}", HasPassword={len(info.Password) > 0})')
 			await self.handle_out_data(info, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
 			print('✅ CLIENT_INFO_PDU enviado!')
 			
@@ -847,15 +853,18 @@ class RDPConnection:
 					if length_byte & 0x80:  # Long form
 						num_bytes = length_byte & 0x7F
 						offset += 1
-						cert_length = int.from_bytes(remaining[offset:offset+num_bytes], 'big')
+						# Big-endian para ASN.1
+						cert_length = int.from_bytes(remaining[offset:offset+num_bytes], byteorder='big', signed=False)
 						offset += num_bytes
+						print(f'📏 ASN.1 Long form: {num_bytes} bytes de tamanho = {cert_length}')
 					else:  # Short form
 						cert_length = length_byte
 						offset += 1
+						print(f'📏 ASN.1 Short form: tamanho = {cert_length}')
 					
 					# Pular o certificado
 					offset += cert_length
-					print(f'📏 Certificado ASN.1: {cert_length} bytes (offset={offset})')
+					print(f'📏 Total offset após certificado: {offset} bytes')
 					
 					# Verificar se há dados RDP após o certificado
 					if offset < len(remaining):
