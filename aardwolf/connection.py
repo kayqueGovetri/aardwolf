@@ -702,8 +702,8 @@ class RDPConnection:
 
 			extinfo = TS_EXTENDED_INFO_PACKET()
 			extinfo.clientAddressFamily = CLI_AF.AF_INET
-			extinfo.clientAddress = '10.10.10.101'
-			extinfo.clientDir = 'C:\\WINNT\\System32\\mstscax.dll'
+			extinfo.clientAddress = '127.0.0.1'
+			extinfo.clientDir = 'C:\\Windows\\System32\\mstscax.dll'
 			extinfo.clientTimeZone = systz
 			# extinfo.clientSessionId = 0
 			if self.iosettings.performance_flags is not None:
