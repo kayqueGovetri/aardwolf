@@ -856,35 +856,21 @@ class RDPConnection:
 			sync_pdu.messageType = 1  # SYNCMSGTYPE_SYNC
 			sync_pdu.targetUser = self.__joined_channels['MCS'].channel_id
 			
-			# Calcular tamanho do sync_pdu
-			sync_bytes = sync_pdu.to_bytes()
-			
-			# Criar Share Control Header
-			shc = TS_SHARECONTROLHEADER()
-			shc.pduType = PDUTYPE.DATAPDU
-			shc.pduSource = self.__joined_channels['MCS'].channel_id
-			shc.totalLength = 18 + len(sync_bytes)  # 6 (shc) + 12 (shd) + sync_bytes
-			
 			# Criar Share Data Header
 			shd = TS_SHAREDATAHEADER()
-			shd.shareControlHeader = shc
 			shd.shareID = 0  # Will be set after we receive DEMANDACTIVEPDU
 			shd.streamID = STREAM_TYPE.LOW
 			shd.pduType2 = PDUTYPE2.SYNCHRONIZE
 			shd.compressedType = 0
 			shd.compressedLength = 0
-			shd.uncompressedLength = 18 + len(sync_bytes)
-			
-			# Montar PDU completo
-			pdu_data = shd.to_bytes() + sync_bytes
 			
 			# Criar Security Header (sem criptografia para RDS)
 			sec_hdr = TS_SECURITY_HEADER()
 			sec_hdr.flags = 0  # Sem criptografia
 			sec_hdr.flagsHi = 0
 			
-			# Enviar via MCS
-			await self.handle_out_data(pdu_data, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+			# Enviar via MCS (handle_out_data monta o PDU completo)
+			await self.handle_out_data(sync_pdu, sec_hdr, shd, None, self.__joined_channels['MCS'].channel_id, False)
 			print('✅ Client Synchronize PDU enviado!')
 			
 			# Aguardar um pouco para o servidor processar
