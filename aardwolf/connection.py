@@ -741,6 +741,7 @@ class RDPConnection:
 		try:
 			print('\n===== HANDLE LICENSE =====')
 			
+			# Processar tokenInhibitConfirm
 			data, err = await asyncio.wait_for(
 				self.__joined_channels['MCS'].out_queue.get(),
 				timeout=5
@@ -748,110 +749,152 @@ class RDPConnection:
 			if err is not None:
 				raise err
 
-			print(f'📦 Recebido {len(data)} bytes TOTAL')
-			
-			# Decodificar tokenInhibitConfirm
+			print(f'📦 Recebido {len(data)} bytes')
 			res = self._t125_per_codec.decode('DomainMCSPDU', data)
-			print(f'📋 DomainMCSPDU tipo: {res[0]}')
+			print(f'📋 MCS PDU: {res[0]}')
 			
-			if res[0] == 'tokenInhibitConfirm':
-				print('✅ tokenInhibitConfirm recebido')
-				if res[1]['result'] != 'rt-successful':
-					raise Exception('License error! tokenInhibitConfirm:result not successful')
+			if res[0] != 'tokenInhibitConfirm':
+				raise Exception(f'Expected tokenInhibitConfirm, got {res[0]}')
+			
+			if res[1]['result'] != 'rt-successful':
+				raise Exception('License error! tokenInhibitConfirm:result not successful')
+			
+			print('✅ tokenInhibitConfirm OK')
+			
+			# Verificar se há dados extras no mesmo pacote
+			encoded = self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1]))
+			encoded_size = len(encoded)
+			remaining = data[encoded_size:]
+			
+			print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
+			print(f'📏 Dados extras: {len(remaining)} bytes')
+			
+			# Processar dados extras se existirem
+			if len(remaining) > 10:
+				print(f'\n📦 Processando dados extras do mesmo pacote...')
+				print(f'📝 Hex: {remaining[:40].hex()}')
 				
-				# Calcular tamanho do tokenInhibitConfirm
-				encoded = self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1]))
-				encoded_size = len(encoded)
-				remaining = data[encoded_size:]
-				
-				print(f'📏 tokenInhibitConfirm: {encoded_size} bytes')
-				print(f'📏 Dados extras: {len(remaining)} bytes')
-				
-				if len(remaining) > 10:
-					print(f'\n⚠️ Há {len(remaining)} bytes extras (userData criptografado)!')
-					print(f'📝 Hex (40 primeiros): {remaining[:40].hex()}')
+				try:
+					extra_pdu = self._t125_per_codec.decode('DomainMCSPDU', remaining)
+					print(f'📋 Tipo: {extra_pdu[0]}')
 					
-					# PROCESSAR COMO userData (igual ao __x224_reader linha 1178-1195)
-					user_data = remaining
-					
-					if self.cryptolayer is not None:
-						print('🔓 Descriptografando userData...')
-						sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
-						print(f'🔐 Security flags: {sec_hdr.flags}')
+					if extra_pdu[0] == 'sendDataIndication':
+						user_data = extra_pdu[1]['userData']
 						
-						if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
-							orig_data = user_data[12:]  # Pula security header (12 bytes)
-							decrypted = self.cryptolayer.client_dec(orig_data)
-							print(f'✅ Descriptografado: {len(decrypted)} bytes')
-							print(f'📝 Hex (40 primeiros): {decrypted[:40].hex()}')
+						if self.cryptolayer is not None:
+							from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
+							try:
+								sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
+								if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+									user_data = self.cryptolayer.client_dec(user_data[12:])
+									print(f'✅ Descriptografado: {len(user_data)} bytes')
+							except:
+								pass
+						
+						from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE, TS_SHAREDATAHEADER, PDUTYPE2
+						
+						try:
+							shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
+							print(f'✅ PDU: {shc.pduType.name}')
 							
-							# PARSEAR COMO TS_SHARECONTROLHEADER
+							if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
+								print('🎉 DEMANDACTIVEPDU nos dados extras!')
+								await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+								return True, None
+							elif shc.pduType == PDUTYPE.DATAPDU:
+								shd = TS_SHAREDATAHEADER.from_bytes(user_data)
+								print(f'📋 DATAPDU: {shd.pduType2.name}')
+						except Exception as e:
+							print(f'⚠️ Erro parsear: {e}')
+				except Exception as e:
+					print(f'⚠️ Erro decodificar extras: {e}')
+			
+			# AGORA: Aguardar e processar PDUs adicionais que o servidor pode enviar
+			# (Server Save Session Info, Auto-Reconnect Status, etc.)
+			print('\n🔄 Aguardando PDUs adicionais do servidor...')
+			
+			pdus_processados = 0
+			max_pdus = 5  # Processar até 5 PDUs adicionais
+			
+			while pdus_processados < max_pdus:
+				try:
+					# Aguardar próximo PDU com timeout curto
+					data, err = await asyncio.wait_for(
+						self.__joined_channels['MCS'].out_queue.get(),
+						timeout=1.0  # 1 segundo entre PDUs
+					)
+					if err is not None:
+						raise err
+					
+					print(f'\n📦 PDU adicional recebido: {len(data)} bytes')
+					print(f'📝 Hex (40 primeiros): {data[:40].hex()}')
+					
+					# Tentar decodificar como MCS PDU
+					try:
+						mcs_pdu = self._t125_per_codec.decode('DomainMCSPDU', data)
+						print(f'📋 MCS PDU tipo: {mcs_pdu[0]}')
+						
+						if mcs_pdu[0] == 'sendDataIndication':
+							user_data = mcs_pdu[1]['userData']
+							print(f'📦 userData: {len(user_data)} bytes')
+							
+							# Processar userData (pode estar criptografado)
+							if self.cryptolayer is not None:
+								from aardwolf.protocol.T128.security import TS_SECURITY_HEADER1, SEC_HDR_FLAG
+								try:
+									sec_hdr = TS_SECURITY_HEADER1.from_bytes(user_data)
+									if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
+										print('🔓 Descriptografando...')
+										orig_data = user_data[12:]
+										user_data = self.cryptolayer.client_dec(orig_data)
+										print(f'✅ Descriptografado: {len(user_data)} bytes')
+								except:
+									pass
+							
+							# Tentar identificar o tipo de PDU
 							from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
+							from aardwolf.protocol.T128.share import TS_SHAREDATAHEADER, PDUTYPE2
 							
 							try:
-								shc = TS_SHARECONTROLHEADER.from_bytes(decrypted)
-								print(f'\n🎉 pduType = {shc.pduType.name}')
+								shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
+								print(f'✅ PDU tipo: {shc.pduType.name}')
 								
 								if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-									print('✅✅✅ É DEMANDACTIVEPDU!')
+									print('🎉🎉🎉 DEMANDACTIVEPDU ENCONTRADO!')
+									# Recolocar na fila para __handle_mandatory_capability_exchange processar
+									await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+									print('✅ License handling concluído (DEMANDACTIVEPDU na fila)\n')
+									return True, None
 								
-								# Recolocar dados DESCRIPTOGRAFADOS na fila
-								print('🔄 Recolocando dados descriptografados na fila MCS...')
-								await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
+								elif shc.pduType == PDUTYPE.DATAPDU:
+									# Pode ser Server Save Session Info ou outro DATAPDU
+									shd = TS_SHAREDATAHEADER.from_bytes(user_data)
+									print(f'📋 DATAPDU tipo: {shd.pduType2.name}')
+									
+									if shd.pduType2 == PDUTYPE2.SAVE_SESSION_INFO:
+										print('✅ Server Save Session Info recebido (processando...)')
+										# Processar e continuar aguardando DEMANDACTIVEPDU
+									else:
+										print(f'⚠️ DATAPDU inesperado: {shd.pduType2.name}')
+								else:
+									print(f'⚠️ PDU inesperado: {shc.pduType.name}')
 								
 							except Exception as e:
-								print(f'❌ Erro parse: {e}')
-								# Tentar com offset 4
-								try:
-									shc = TS_SHARECONTROLHEADER.from_bytes(decrypted[4:])
-									print(f'\n🎉 pduType (offset 4) = {shc.pduType.name}')
-									await self.__joined_channels['MCS'].out_queue.put((decrypted[4:], None))
-								except:
-									await self.__joined_channels['MCS'].out_queue.put((decrypted, None))
+								print(f'❌ Erro ao parsear PDU: {e}')
+								print('⚠️ Ignorando PDU desconhecido')
 						else:
-							print('⚠️ userData não está criptografado')
-							await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-					else:
-						print('⚠️ Sem cryptolayer')
+							print(f'⚠️ MCS PDU inesperado: {mcs_pdu[0]}')
 						
-						# Tentar encontrar o SHARECONTROLHEADER nos dados
-						# O cabeçalho começa após dados ASN.1/criptografia
-						from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
-						
-						found_offset = None
-						# Procurar pelo padrão do SHARECONTROLHEADER
-						# Testar offsets comuns e validar totalLength
-						for offset in [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48]:
-							try:
-								if offset >= len(remaining):
-									break
-								shc = TS_SHARECONTROLHEADER.from_bytes(remaining[offset:])
-								
-								# Validar se o totalLength é razoável (entre 100 e tamanho dos dados)
-								if shc.totalLength < 100 or shc.totalLength > len(remaining):
-									print(f'⚠️ Offset {offset}: totalLength inválido ({shc.totalLength})')
-									continue
-								
-								# Validar se é DEMANDACTIVEPDU
-								if shc.pduType != PDUTYPE.DEMANDACTIVEPDU:
-									print(f'⚠️ Offset {offset}: {shc.pduType.name} (esperado DEMANDACTIVEPDU)')
-									continue
-								
-								print(f'✅ DEMANDACTIVEPDU válido no offset {offset}')
-								print(f'   totalLength: {shc.totalLength}')
-								print(f'   shareID: 0x{shc.shareID:08x}')
-								found_offset = offset
-								break
-							except Exception as e:
-								continue
-						
-						if found_offset is not None:
-							print(f'🔄 Recolocando dados a partir do offset {found_offset}...')
-							await self.__joined_channels['MCS'].out_queue.put((remaining[found_offset:], None))
-						else:
-							print('❌ SHARECONTROLHEADER não encontrado, ignorando dados')
-							# Não recolocar dados inválidos na fila
-
+					except Exception as e:
+						print(f'❌ Erro ao decodificar MCS: {e}')
+						print('⚠️ Ignorando dados')
+					
+					pdus_processados += 1
+					
+				except asyncio.TimeoutError:
+					print(f'⏱ Timeout aguardando PDU adicional (processados: {pdus_processados})')
+					break
+			
 			print('\n✅ License handling concluído\n')
 			return True, None
 			
