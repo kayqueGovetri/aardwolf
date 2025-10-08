@@ -847,30 +847,29 @@ class RDPConnection:
 			print('\n📤 Enviando Client Synchronize PDU para acordar servidor...')
 			
 			from aardwolf.protocol.T128.synchronizepdu import TS_SYNCHRONIZE_PDU
-			from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
 			from aardwolf.protocol.T128.share import TS_SHAREDATAHEADER, PDUTYPE2, STREAM_TYPE
 			from aardwolf.protocol.T128.security import TS_SECURITY_HEADER, SEC_HDR_FLAG
 			
-			# Criar SYNCHRONIZE PDU
-			sync_pdu = TS_SYNCHRONIZE_PDU()
-			sync_pdu.messageType = 1  # SYNCMSGTYPE_SYNC
-			sync_pdu.targetUser = self.__joined_channels['MCS'].channel_id
+			# Criar Share Data Header (seguindo o padrão do código)
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA  # Padrão usado no código
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
 			
-			# Criar Share Data Header
-			shd = TS_SHAREDATAHEADER()
-			shd.shareID = 0  # Will be set after we receive DEMANDACTIVEPDU
-			shd.streamID = STREAM_TYPE.LOW
-			shd.pduType2 = PDUTYPE2.SYNCHRONIZE
-			shd.compressedType = 0
-			shd.compressedLength = 0
+			# Criar SYNCHRONIZE PDU
+			cli_sync = TS_SYNCHRONIZE_PDU()
+			cli_sync.messageType = 1  # SYNCMSGTYPE_SYNC
+			cli_sync.targetUser = self.__joined_channels['MCS'].channel_id
 			
 			# Criar Security Header (sem criptografia para RDS)
-			sec_hdr = TS_SECURITY_HEADER()
-			sec_hdr.flags = 0  # Sem criptografia
-			sec_hdr.flagsHi = 0
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
 			
-			# Enviar via MCS (handle_out_data monta o PDU completo)
-			await self.handle_out_data(sync_pdu, sec_hdr, shd, None, self.__joined_channels['MCS'].channel_id, False)
+			# Enviar via MCS (seguindo o padrão exato do código)
+			await self.handle_out_data(cli_sync, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 			print('✅ Client Synchronize PDU enviado!')
 			
 			# Aguardar um pouco para o servidor processar
