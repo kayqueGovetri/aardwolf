@@ -845,21 +845,23 @@ class RDPConnection:
 					print('⚠️ Dados extras começam com 0x08 (possível certificado ASN.1)')
 					print(f'📝 Primeiros 50 bytes: {remaining[:50].hex()}')
 					
-					# Procurar pelo padrão de início de PDU RDP: 02 00 ou 03 00 (PDUTYPE)
-					# PDU RDP geralmente começa com totalLength (2 bytes) + pduType (2 bytes)
+					# Procurar pelo padrão de DEMANDACTIVEPDU
+					# Estrutura: totalLength (2 bytes) + pduType=0x01 (2 bytes) + pduSource (2 bytes)
 					user_data = None
-					for i in range(len(remaining) - 4):
-						# Procurar por padrão que parece início de PDU
-						if remaining[i:i+2] == b'\x02\x00' or remaining[i:i+2] == b'\x03\x00':
-							# Verificar se o próximo valor parece um tamanho razoável
-							potential_length = int.from_bytes(remaining[i+2:i+4], byteorder='little', signed=False)
-							if 20 < potential_length < 5000:  # Tamanho razoável para um PDU
-								print(f'🔍 Possível início de PDU encontrado no offset {i}')
-								print(f'📏 Tamanho potencial: {potential_length} bytes')
-								user_data = remaining[i:]
-								print(f'📦 Dados RDP extraídos: {len(user_data)} bytes')
-								print(f'📝 Hex: {user_data[:40].hex()}')
-								break
+					for i in range(len(remaining) - 6):
+						# Verificar se parece um TS_SHARECONTROLHEADER com DEMANDACTIVEPDU
+						potential_length = int.from_bytes(remaining[i:i+2], byteorder='little', signed=False)
+						potential_type = int.from_bytes(remaining[i+2:i+4], byteorder='little', signed=False)
+						
+						# DEMANDACTIVEPDU = 0x01, tamanho razoável entre 100 e 5000 bytes
+						if potential_type == 0x01 and 100 < potential_length < 5000:
+							print(f'🔍 DEMANDACTIVEPDU encontrado no offset {i}!')
+							print(f'📏 totalLength: {potential_length} bytes')
+							print(f'📏 pduType: 0x{potential_type:02x} (DEMANDACTIVEPDU)')
+							user_data = remaining[i:]
+							print(f'📦 Dados RDP extraídos: {len(user_data)} bytes')
+							print(f'📝 Hex: {user_data[:40].hex()}')
+							break
 					
 					if user_data is None:
 						print('⚠️ Não foi possível encontrar início de PDU RDP')
