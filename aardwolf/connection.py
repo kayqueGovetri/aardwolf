@@ -856,23 +856,27 @@ class RDPConnection:
 			sync_pdu.messageType = 1  # SYNCMSGTYPE_SYNC
 			sync_pdu.targetUser = self.__joined_channels['MCS'].channel_id
 			
-			# Criar Share Data Header
-			shd = TS_SHAREDATAHEADER()
-			shd.shareID = 0  # Will be set after we receive DEMANDACTIVEPDU
-			shd.streamID = STREAM_TYPE.LOW
-			shd.pduType2 = PDUTYPE2.SYNCHRONIZE
-			shd.compressedType = 0
-			shd.compressedLength = 0
-			shd.uncompressedLength = len(sync_pdu.to_bytes()) + 18
+			# Calcular tamanho do sync_pdu
+			sync_bytes = sync_pdu.to_bytes()
 			
 			# Criar Share Control Header
 			shc = TS_SHARECONTROLHEADER()
 			shc.pduType = PDUTYPE.DATAPDU
 			shc.pduSource = self.__joined_channels['MCS'].channel_id
-			shc.totalLength = len(shd.to_bytes()) + len(sync_pdu.to_bytes()) + 6
+			shc.totalLength = 18 + len(sync_bytes)  # 6 (shc) + 12 (shd) + sync_bytes
+			
+			# Criar Share Data Header
+			shd = TS_SHAREDATAHEADER()
+			shd.shareControlHeader = shc
+			shd.shareID = 0  # Will be set after we receive DEMANDACTIVEPDU
+			shd.streamID = STREAM_TYPE.LOW
+			shd.pduType2 = PDUTYPE2.SYNCHRONIZE
+			shd.compressedType = 0
+			shd.compressedLength = 0
+			shd.uncompressedLength = 18 + len(sync_bytes)
 			
 			# Montar PDU completo
-			pdu_data = shc.to_bytes() + shd.to_bytes() + sync_pdu.to_bytes()
+			pdu_data = shd.to_bytes() + sync_bytes
 			
 			# Criar Security Header (sem criptografia para RDS)
 			sec_hdr = TS_SECURITY_HEADER()
