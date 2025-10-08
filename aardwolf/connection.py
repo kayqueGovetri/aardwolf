@@ -511,7 +511,13 @@ class RDPConnection:
 
 			ud_clust = TS_UD_CS_CLUSTER()
 			ud_clust.RedirectedSessionID = 0
-			ud_clust.Flags = 8|4|ClusterInfo.REDIRECTION_SUPPORTED
+			# Set proper ClusterInfo flags for RDS
+			# REDIRECTION_SUPPORTED (0x01) + ServerSessionRedirectionVersionMask (version 4 = 0x10)
+			# Version 4 is for RDP 7.0+ (Windows Server 2008 R2+)
+			ud_clust.Flags = (
+				ClusterInfo.REDIRECTION_SUPPORTED |  # 0x00000001 - Support redirection
+				(4 << 2)                              # 0x00000010 - Version 4 in bits 2-5 (ServerSessionRedirectionVersionMask)
+			)
 
 			ud_net = TS_UD_CS_NET()
 			
