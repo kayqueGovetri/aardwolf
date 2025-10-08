@@ -495,6 +495,16 @@ class RDPConnection:
 			ud_core.pad1octet = b'\x00'
 			ud_core.serverSelectedProtocol = self.x224_protocol
 			
+			# DEBUG: Log exact values being sent
+			print(f'\n🔍 DEBUG MCS Connect Initial:')
+			print(f'  earlyCapabilityFlags: 0x{ud_core.earlyCapabilityFlags:04X} ({ud_core.earlyCapabilityFlags})')
+			print(f'  supportedColorDepths: 0x{ud_core.supportedColorDepths:04X}')
+			print(f'  highColorDepth: {ud_core.highColorDepth}')
+			print(f'  connectionType: {ud_core.connectionType}')
+			print(f'  clientBuild: {ud_core.clientBuild}')
+			print(f'  clientName: {ud_core.clientName}')
+			print(f'  serverSelectedProtocol: {ud_core.serverSelectedProtocol}')
+			
 			ud_sec = TS_UD_CS_SEC()
 			ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH if self.x224_protocol is not SUPP_PROTOCOLS.RDP else ENCRYPTION_FLAG.BIT_128
 			ud_sec.extEncryptionMethods = ENCRYPTION_FLAG.FRENCH
