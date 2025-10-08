@@ -740,7 +740,7 @@ class RDPConnection:
 
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
-			info.flags = INFO_FLAG.ENABLEWINDOWSKEY|INFO_FLAG.MAXIMIZESHELL|INFO_FLAG.UNICODE|INFO_FLAG.DISABLECTRLALTDEL|INFO_FLAG.MOUSE|INFO_FLAG.AUTOLOGON
+			info.flags = INFO_FLAG.ENABLEWINDOWSKEY|INFO_FLAG.MAXIMIZESHELL|INFO_FLAG.UNICODE|INFO_FLAG.DISABLECTRLALTDEL|INFO_FLAG.MOUSE|INFO_FLAG.AUTOLOGON|INFO_FLAG.LOGONNOTIFY
 			info.Domain = ''
 			info.UserName = ''
 			info.Password = ''
@@ -752,10 +752,9 @@ class RDPConnection:
 					info.Domain = self.credentials.domain
 				if self.credentials.username is not None:
 					info.UserName = self.credentials.username
-				# Para HYBRID_EX, não enviar senha novamente (já foi via CredSSP)
-				if self.authapi is None or SUPP_PROTOCOLS.SSL in self.x224_protocol:
-					if self.credentials.secret is not None:
-						info.Password = self.credentials.secret
+				# Enviar senha APENAS quando usando segurança RDP clássica (sem TLS/CredSSP)
+				if self.x224_protocol == SUPP_PROTOCOLS.RDP and self.credentials.secret is not None:
+					info.Password = self.credentials.secret
 			
 			info.AlternateShell = '' 
 			info.WorkingDir = ''
@@ -826,6 +825,13 @@ class RDPConnection:
 				raise Exception('License error! tokenInhibitConfirm:result not successful')
 			
 			print('✅ tokenInhibitConfirm OK')
+			# Log negotiated security to ensure licensing expectations are correct
+			try:
+				sec = self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY]
+				print(f'🔒 Server encryptionLevel: {sec.encryptionLevel}')
+				print(f'🔒 X224 negotiated protocol(s): {self.x224_protocol}')
+			except Exception:
+				pass
 			
 			# Verificar se há dados extras no mesmo pacote
 			encoded = self._t125_per_codec.encode('DomainMCSPDU', (res[0], res[1]))
@@ -842,51 +848,62 @@ class RDPConnection:
 				print('⚠️ Dados extras são certificado de licença - ignorando')
 			
 			# CRITICAL: O servidor pode enviar DEMANDACTIVEPDU imediatamente após license!
-			# Precisamos ler DIRETAMENTE da conexão, pois o reader ainda não está ativo!
-			print('\n🔄 Tentando ler DEMANDACTIVEPDU diretamente da conexão...')
-			
-			try:
-				# Ler próximo pacote X224/MCS diretamente
-				response = await asyncio.wait_for(
-					self._x224net.read(),
-					timeout=3.0
-				)
-				
-				if response is not None:
-					print(f'📦 Pacote recebido: {len(response.data)} bytes')
-					print(f'📝 Hex (primeiros 40): {response.data[:40].hex()}')
+			# Evitar competir com o __x224_reader. Se o reader já estiver ativo, não faça leitura direta.
+			if self.__x224_reader_task is not None and self.__x224_reader_task.done() is False:
+				print('\nℹ️ __x224_reader ativo; não farei leitura direta. DEMANDACTIVEPDU virá via fila MCS.')
+			else:
+				print('\n🔄 Tentando ler DEMANDACTIVEPDU diretamente da conexão...')
+				try:
+					# Ler próximo pacote X224/MCS diretamente
+					response = await asyncio.wait_for(
+						self._x224net.read(),
+						timeout=3.0
+					)
 					
-					# Decodificar MCS PDU
-					try:
-						mcs_pdu = self._t125_per_codec.decode('DomainMCSPDU', response.data)
-						print(f'📋 MCS PDU tipo: {mcs_pdu[0]}')
+					if response is not None:
+						print(f'📦 Pacote recebido: {len(response.data)} bytes')
+						print(f'📝 Hex (primeiros 40): {response.data[:40].hex()}')
 						
-						if mcs_pdu[0] == 'sendDataIndication':
-							user_data = mcs_pdu[1]['userData']
-							print(f'📦 userData: {len(user_data)} bytes')
+						# Decodificar MCS PDU
+						try:
+							mcs_pdu = self._t125_per_codec.decode('DomainMCSPDU', response.data)
+							print(f'📋 MCS PDU tipo: {mcs_pdu[0]}')
 							
-							# Tentar parsear como DEMANDACTIVEPDU
-							from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
-							try:
-								shc = TS_SHARECONTROLHEADER.from_bytes(user_data)
-								print(f'✅ PDU tipo: {shc.pduType.name}')
-								
-								if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
-									print('🎉🎉🎉 DEMANDACTIVEPDU RECEBIDO após license!')
-									# Colocar na fila para __handle_mandatory_capability_exchange processar
-									await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-									print('✅ DEMANDACTIVEPDU colocado na fila\n')
-									return True, None
-								else:
-									print(f'⚠️ PDU inesperado: {shc.pduType.name}')
-							except Exception as e:
-								print(f'⚠️ Erro ao parsear PDU: {e}')
-					except Exception as e:
-						print(f'⚠️ Erro ao decodificar MCS: {e}')
-				else:
-					print('⚠️ Nenhum pacote recebido')
-			except asyncio.TimeoutError:
-				print('⏱ Timeout - servidor não enviou DEMANDACTIVEPDU após license')
+							if mcs_pdu[0] == 'sendDataIndication':
+								user_data = mcs_pdu[1]['userData']
+								print(f'📦 userData: {len(user_data)} bytes')
+								# Aplicar offset de 4 bytes quando encryptionLevel == 1 (cabeçalho de segurança vazio)
+								data_start_offset = 0
+								try:
+									if self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].encryptionLevel == 1:
+										data_start_offset = 4
+								except Exception:
+									pass
+								raw = user_data[data_start_offset:]
+								# Tentar parsear como DEMANDACTIVEPDU
+								from aardwolf.protocol.T128.share import TS_SHARECONTROLHEADER, PDUTYPE
+								try:
+									shc = TS_SHARECONTROLHEADER.from_bytes(raw)
+									print(f'✅ PDU tipo: {shc.pduType.name}')
+									
+									if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
+										print('🎉🎉🎉 DEMANDACTIVEPDU RECEBIDO após license!')
+										# Colocar na fila para __handle_mandatory_capability_exchange processar
+										await self.__joined_channels['MCS'].out_queue.put((user_data, None))
+										print('✅ DEMANDACTIVEPDU colocado na fila\n')
+										return True, None
+									else:
+										print(f'⚠️ PDU inesperado: {shc.pduType.name}')
+								except Exception as e:
+									print(f'⚠️ Erro ao parsear PDU: {e}')
+							else:
+								print('➡️ MCS PDU não é sendDataIndication, ignorando leitura direta')
+						except Exception as e:
+							print(f'⚠️ Erro ao decodificar MCS: {e}')
+					else:
+						print('⚠️ Nenhum pacote recebido')
+				except asyncio.TimeoutError:
+					print('⏱ Timeout - servidor não enviou DEMANDACTIVEPDU após license')
 			
 			print('\n✅ License handling concluído\n')
 			return True, None
@@ -1073,7 +1090,7 @@ class RDPConnection:
 
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.pduType2 = PDUTYPE2.SYNCHRONIZE
 
 			cli_sync = TS_SYNCHRONIZE_PDU()
@@ -1088,7 +1105,7 @@ class RDPConnection:
 
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
 
 			cli_ctrl = TS_CONTROL_PDU()
@@ -1107,7 +1124,7 @@ class RDPConnection:
 
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.pduType2 = PDUTYPE2.CONTROL
 
 			cli_ctrl = TS_CONTROL_PDU()
@@ -1125,7 +1142,7 @@ class RDPConnection:
 
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.pduType2 = PDUTYPE2.FONTLIST
 
 			cli_font = TS_FONT_LIST_PDU()
@@ -1220,11 +1237,34 @@ class RDPConnection:
 				if is_fastpath is False:
 					x = self._t125_per_codec.decode('DomainMCSPDU', response.data)
 					if x[0] != 'sendDataIndication':
-						#print('Unknown packet!')
+						# Log all non-userdata MCS control PDUs (e.g., tokenInhibitConfirm) for licensing diagnostics
+						try:
+							print(f'MCS control PDU: {x[0]}')
+						except Exception:
+							pass
 						continue
 					
 					data = x[1]['userData']
 					if data is not None:
+						# Peek security header flags for diagnostics (helps detect Licensing/Redirection/EMT)
+						try:
+							if len(data) >= 4:
+								flags_val = int.from_bytes(data[:2], byteorder='little', signed=False)
+								flags = SEC_HDR_FLAG(flags_val)
+								if flags != 0:
+									print(f'SEC_HDR flags on incoming userData: {flags}')
+									if SEC_HDR_FLAG.LICENSE_PKT in flags:
+										print('🔐 Licensing PDU observed from server')
+									if SEC_HDR_FLAG.REDIRECTION_PKT in flags:
+										print('↪️ Server Redirection PDU observed (standard security)')
+									if SEC_HDR_FLAG.TRANSPORT_RSP in flags:
+										print('📶 Multitransport Response observed')
+									if SEC_HDR_FLAG.AUTODETECT_RSP in flags:
+										print('📡 Auto-Detect Response observed')
+									if SEC_HDR_FLAG.HEARTBEAT in flags:
+										print('❤️ Heartbeat PDU observed')
+						except Exception as e:
+							print(f'⚠️ SEC_HDR flag peek failed: {e}')
 						if self.cryptolayer is not None:
 							sec_hdr = TS_SECURITY_HEADER1.from_bytes(data)
 							if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
