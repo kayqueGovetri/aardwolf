@@ -860,37 +860,9 @@ class RDPConnection:
 				print(f'📝 Hex (primeiros 40): {remaining[:40].hex()}')
 				print('⚠️ Dados extras são certificado de licença - ignorando')
 			
-			# CRITICAL: Check if server sent anything after tokenInhibitConfirm
-			# Some servers coalesce tokenInhibitConfirm + sendDataIndication(DEMANDACTIVEPDU) in same frame
-			print('\n🔍 DIAGNOSTIC: Checking for coalesced PDUs after tokenInhibitConfirm...')
-			
-			# Check if there's more data in the same buffer after tokenInhibitConfirm
-			if len(remaining) > 10:
-				print(f'⚠️ WARNING: {len(remaining)} bytes remain after tokenInhibitConfirm - may contain DEMANDACTIVEPDU!')
-				print(f'📝 Remaining hex (first 60): {remaining[:60].hex()}')
-				
-				# Try to decode as DomainMCSPDU
-				try:
-					extra_pdu = self._t125_per_codec.decode('DomainMCSPDU', remaining)
-					print(f'✅ Decoded extra PDU: {extra_pdu[0]}')
-					
-					if extra_pdu[0] == 'sendDataIndication':
-						user_data = extra_pdu[1]['userData']
-						print(f'🎉 Found sendDataIndication with {len(user_data)} bytes userData!')
-						
-						# Put in MCS queue for __handle_mandatory_capability_exchange
-						await self.__joined_channels['MCS'].out_queue.put((user_data, None))
-						print('✅ Coalesced DEMANDACTIVEPDU placed in MCS queue\n')
-						return True, None
-					
-					elif extra_pdu[0] == 'mergeChannelsRequest':
-						print('🔀 Server sent mergeChannelsRequest - this is a channel merge request')
-						print('⚠️ This PDU should be handled by __x224_reader, not here')
-						print('⚠️ Server may be waiting for mergeChannelsConfirm before sending DEMANDACTIVEPDU')
-						# Don't return - let __x224_reader handle it
-						
-				except Exception as e:
-					print(f'⚠️ Failed to decode remaining data as MCS PDU: {e}')
+			# Note: Extra data after tokenInhibitConfirm is just the license certificate
+			# Any subsequent PDUs (mergeChannelsRequest, DEMANDACTIVEPDU) will come via __x224_reader
+			print('\n✅ License certificate processed - waiting for server PDUs via __x224_reader')
 			
 			# If __x224_reader is active, DEMANDACTIVEPDU will come via queue
 			if self.__x224_reader_task is not None and self.__x224_reader_task.done() is False:
