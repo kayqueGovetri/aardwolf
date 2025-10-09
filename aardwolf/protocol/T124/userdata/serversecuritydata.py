@@ -33,8 +33,17 @@ class SERVER_CERTIFICATE:
 	def from_buffer(buff: io.BytesIO):
 		msg = SERVER_CERTIFICATE()
 		temp = int.from_bytes(buff.read(4), byteorder='little', signed = False)
-		msg.certChainVersion = CERT_CHAIN_VERSION((temp << 1) >> 1)
+		version_value = (temp << 1) >> 1  # Extract version bits (mask out high bit)
 		msg.t = bool(temp >> 31)
+		
+		# Try to convert to enum, but handle unknown versions gracefully
+		try:
+			msg.certChainVersion = CERT_CHAIN_VERSION(version_value)
+		except ValueError:
+			# Unknown version - treat as VERSION_2 (X.509 certificate)
+			print(f'⚠️ Unknown CERT_CHAIN_VERSION: {version_value} (0x{version_value:08X}), treating as VERSION_2')
+			msg.certChainVersion = CERT_CHAIN_VERSION.VERSION_2
+		
 		if msg.certChainVersion in [CERT_CHAIN_VERSION.VERSION_1, CERT_CHAIN_VERSION.VERSION_0]:
 			msg.certificate = PROPRIETARYSERVERCERTIFICATE.from_buffer(buff)
 			msg.exponent = msg.certificate.PublicKeyBlob.pubExp
