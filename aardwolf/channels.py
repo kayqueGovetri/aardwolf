@@ -73,5 +73,7 @@ class MCSChannel(Channel):
 
 	async def process_channel_data(self, data):
 		# This function will be called when channel data is recieved from the server
-		#print('Channel data in! "%s(%s)" <- %s' % (self.name, self.channel_id, data))
+		print(f'📬 MCSChannel.process_channel_data: Received {len(data) if data else 0} bytes, putting in out_queue')
+		print(f'   Queue size before put: {self.out_queue.qsize()}')
 		await self.out_queue.put((data, None))
+		print(f'   Queue size after put: {self.out_queue.qsize()}')

@@ -1229,9 +1229,14 @@ class RDPConnection:
 		# dont activate it before this!!!!
 		
 		try:
+			print('\n🚀 __x224_reader STARTED')
 			self.__connection.packetizer.packetizer_control("X224")
 			
+			packet_count = 0
 			async for is_fastpath, response in self.__connection.read():
+				packet_count += 1
+				print(f'\n📥 __x224_reader packet #{packet_count}: is_fastpath={is_fastpath}, size={len(response.data) if response else 0}')
+				
 				#is_fastpath, response, err = await self._x224net.in_queue.get()
 				#if err is not None:
 				#	raise err
@@ -1240,16 +1245,19 @@ class RDPConnection:
 					raise Exception('Server terminated the connection!')
 				
 				if is_fastpath is False:
+					print(f'📝 Raw data (first 60): {response.data[:60].hex()}')
 					x = self._t125_per_codec.decode('DomainMCSPDU', response.data)
+					print(f'📋 Decoded MCS PDU: {x[0]}')
+					
 					if x[0] != 'sendDataIndication':
 						# Log all non-userdata MCS control PDUs (e.g., tokenInhibitConfirm) for licensing diagnostics
-						try:
-							print(f'MCS control PDU: {x[0]}')
-						except Exception:
-							pass
+						print(f'⚠️ Non-sendDataIndication PDU: {x[0]} - DISCARDING (continue)')
 						continue
 					
 					data = x[1]['userData']
+					channel_id = x[1]['channelId']
+					print(f'📨 sendDataIndication: channelId={channel_id}, userData size={len(data) if data else 0}')
+					
 					if data is not None:
 						# Peek security header flags for diagnostics (helps detect Licensing/Redirection/EMT)
 						try:
@@ -1257,19 +1265,20 @@ class RDPConnection:
 								flags_val = int.from_bytes(data[:2], byteorder='little', signed=False)
 								flags = SEC_HDR_FLAG(flags_val)
 								if flags != 0:
-									print(f'SEC_HDR flags on incoming userData: {flags}')
+									print(f'🔎 SEC_HDR flags: {flags} (0x{flags_val:04x})')
 									if SEC_HDR_FLAG.LICENSE_PKT in flags:
-										print('🔐 Licensing PDU observed from server')
+										print('  🔐 Licensing PDU')
 									if SEC_HDR_FLAG.REDIRECTION_PKT in flags:
-										print('↪️ Server Redirection PDU observed (standard security)')
+										print('  ↪️ Redirection PDU')
 									if SEC_HDR_FLAG.TRANSPORT_RSP in flags:
-										print('📶 Multitransport Response observed')
+										print('  📶 Multitransport Response')
 									if SEC_HDR_FLAG.AUTODETECT_RSP in flags:
-										print('📡 Auto-Detect Response observed')
+										print('  📡 Auto-Detect Response')
 									if SEC_HDR_FLAG.HEARTBEAT in flags:
-										print('❤️ Heartbeat PDU observed')
+										print('  ❤️ Heartbeat PDU')
 						except Exception as e:
 							print(f'⚠️ SEC_HDR flag peek failed: {e}')
+						
 						if self.cryptolayer is not None:
 							sec_hdr = TS_SECURITY_HEADER1.from_bytes(data)
 							if SEC_HDR_FLAG.ENCRYPT in sec_hdr.flags:
@@ -1285,7 +1294,9 @@ class RDPConnection:
 									print('Decrypted data: %s' % data)
 									print('Original MAC  : %s' % sec_hdr.dataSignature)
 									print('Calculated MAC: %s' % mac)
-					await self.__channel_id_lookup[x[1]['channelId']].process_channel_data(data)
+					
+					print(f'✅ Dispatching to channel {channel_id}: {self.__channel_id_lookup.get(channel_id, "UNKNOWN")}')
+					await self.__channel_id_lookup[channel_id].process_channel_data(data)
 				else:
 					#print('fastpath data in -> %s' % len(response))
 					fpdu = TS_FP_UPDATE_PDU.from_bytes(response)
