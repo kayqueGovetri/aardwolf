@@ -882,6 +882,13 @@ class RDPConnection:
 						await self.__joined_channels['MCS'].out_queue.put((user_data, None))
 						print('✅ Coalesced DEMANDACTIVEPDU placed in MCS queue\n')
 						return True, None
+					
+					elif extra_pdu[0] == 'mergeChannelsRequest':
+						print('🔀 Server sent mergeChannelsRequest - this is a channel merge request')
+						print('⚠️ This PDU should be handled by __x224_reader, not here')
+						print('⚠️ Server may be waiting for mergeChannelsConfirm before sending DEMANDACTIVEPDU')
+						# Don't return - let __x224_reader handle it
+						
 				except Exception as e:
 					print(f'⚠️ Failed to decode remaining data as MCS PDU: {e}')
 			
@@ -1244,6 +1251,16 @@ class RDPConnection:
 					print(f'📝 Raw data (first 60): {response.data[:60].hex()}')
 					x = self._t125_per_codec.decode('DomainMCSPDU', response.data)
 					print(f'📋 Decoded MCS PDU: {x[0]}')
+					
+					# Handle mergeChannelsRequest - server is requesting channel merge
+					if x[0] == 'mergeChannelsRequest':
+						print('🔀 CRITICAL: Server sent mergeChannelsRequest!')
+						print('📤 Sending mergeChannelsConfirm response...')
+						# Send mergeChannelsConfirm response
+						merge_confirm = self._t125_per_codec.encode('DomainMCSPDU', ('mergeChannelsConfirm', {}))
+						await self._x224net.write(merge_confirm)
+						print('✅ mergeChannelsConfirm sent - server should now send DEMANDACTIVEPDU')
+						continue
 					
 					if x[0] != 'sendDataIndication':
 						# Log all non-userdata MCS control PDUs (e.g., tokenInhibitConfirm) for licensing diagnostics
