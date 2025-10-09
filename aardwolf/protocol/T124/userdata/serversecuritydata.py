@@ -80,6 +80,12 @@ class SERVER_CERTIFICATE:
 		for k in self.__dict__:
 			if isinstance(self.__dict__[k], enum.Enum):
 				value = self.__dict__[k].name
+			elif k == 'modulus' and isinstance(self.__dict__[k], int):
+				# Modulus can be huge - show hex instead of decimal
+				value = f'0x{self.__dict__[k]:X}' if self.__dict__[k] else None
+			elif k == 'modulus' and isinstance(self.__dict__[k], bytes):
+				# Modulus as bytes - show hex
+				value = self.__dict__[k].hex()[:64] + '...' if len(self.__dict__[k]) > 32 else self.__dict__[k].hex()
 			else:
 				value = self.__dict__[k]
 			t += '%s: %s\r\n' % (k, value)
@@ -234,6 +240,9 @@ class TS_UD_SC_SEC1:
 		for k in self.__dict__:
 			if isinstance(self.__dict__[k], enum.Enum):
 				value = self.__dict__[k].name
+			elif k == 'serverCertificate':
+				# Don't expand certificate details to avoid huge output
+				value = '<SERVER_CERTIFICATE>' if self.__dict__[k] else None
 			else:
 				value = self.__dict__[k]
 			t += '%s: %s\r\n' % (k, value)
