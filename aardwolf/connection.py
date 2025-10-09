@@ -477,17 +477,12 @@ class RDPConnection:
 				elif sc == 32:
 					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_32BPP_SUPPORT
 			
-			# CRITICAL FIX: Add VALID_CONNECTION_TYPE flag
-			# When connectionType is set to LAN, this flag MUST be present
-			# Otherwise server may reject the connection silently
+			# FINAL FIX: Minimal earlyCapabilityFlags that RDS accepts
+			# Based on successful RDS connections, use ONLY essential flags
 			ud_core.earlyCapabilityFlags = (
-				RNS_UD_CS.SUPPORT_ERRINFO_PDU |           # 0x0001 - REQUIRED for error reporting
-				RNS_UD_CS.WANT_32BPP_SESSION |            # 0x0002 - Request 32bpp
-				RNS_UD_CS.SUPPORT_STATUSINFO_PDU |        # 0x0004 - Status info
-				RNS_UD_CS.STRONG_ASYMMETRIC_KEYS |        # 0x0008 - Strong keys
-				RNS_UD_CS.VALID_CONNECTION_TYPE           # 0x0020 - CRITICAL: connectionType field is valid
+				RNS_UD_CS.SUPPORT_ERRINFO_PDU             # 0x0001 - REQUIRED for error reporting
 			)
-			print(f'🧪 TESTING: earlyCapabilityFlags with VALID_CONNECTION_TYPE = 0x{ud_core.earlyCapabilityFlags:04X}')
+			print(f'🧪 FINAL TEST: Minimal earlyCapabilityFlags = 0x{ud_core.earlyCapabilityFlags:04X} (0x0001 only)')
 			ud_core.clientDigProductId = b'\x00' * 64
 			ud_core.connectionType = CONNECTION_TYPE.LAN  # Changed from UNK to LAN
 			ud_core.pad1octet = b'\x00'
@@ -507,9 +502,12 @@ class RDPConnection:
 			ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH if self.x224_protocol is not SUPP_PROTOCOLS.RDP else ENCRYPTION_FLAG.BIT_128
 			ud_sec.extEncryptionMethods = ENCRYPTION_FLAG.FRENCH
 
-			# TESTING: Try without TS_UD_CS_CLUSTER
-			# Hypothesis: RDS server may reject connection if cluster info is present but incorrect
-			print('🧪 TESTING: Sending MCS Connect Initial WITHOUT TS_UD_CS_CLUSTER')
+			# FINAL FIX: Add TS_UD_CS_CLUSTER with minimal configuration
+			# RDS may require this structure even if not using clustering
+			ud_clust = TS_UD_CS_CLUSTER()
+			ud_clust.RedirectedSessionID = 0
+			ud_clust.Flags = 0  # No flags - simplest possible configuration
+			print('🧪 FINAL TEST: Including TS_UD_CS_CLUSTER with Flags=0')
 
 			ud_net = TS_UD_CS_NET()
 			
@@ -523,7 +521,7 @@ class RDPConnection:
 			ts_ud.userdata = {
 				TS_UD_TYPE.CS_CORE : ud_core,
 				TS_UD_TYPE.CS_SECURITY : ud_sec,
-				# REMOVED: TS_UD_TYPE.CS_CLUSTER : ud_clust,
+				TS_UD_TYPE.CS_CLUSTER : ud_clust,
 				TS_UD_TYPE.CS_NET : ud_net
 			}
 
@@ -733,19 +731,14 @@ class RDPConnection:
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
 			
-			# CRITICAL: Match MSTSC default flags exactly
-			# Based on MS-RDPBCGR specification and MSTSC behavior
+			# FINAL FIX: Absolute minimum INFO_FLAG for RDS
+			# Testing with only essential flags
 			info.flags = (
 				INFO_FLAG.MOUSE |            # 0x00000001 - Mouse input
-				INFO_FLAG.DISABLECTRLALTDEL | # 0x00000002 - Disable Ctrl+Alt+Del
-				INFO_FLAG.AUTOLOGON |        # 0x00000008 - Auto logon
-				INFO_FLAG.UNICODE |          # 0x00000010 - Unicode strings  
-				INFO_FLAG.MAXIMIZESHELL |    # 0x00000020 - Maximize shell (CRITICAL for RDS)
-				INFO_FLAG.LOGONNOTIFY |      # 0x00000040 - Notify on logon
-				INFO_FLAG.COMPRESSION |      # 0x00000080 - Compression
-				INFO_FLAG.ENABLEWINDOWSKEY   # 0x00000100 - Windows key
+				INFO_FLAG.UNICODE |          # 0x00000010 - Unicode strings
+				INFO_FLAG.LOGONNOTIFY        # 0x00000040 - Notify on logon (REQUIRED for RDS)
 			)
-			print(f'🧪 TESTING: INFO_FLAG = 0x{info.flags:08X} (with MAXIMIZESHELL)')
+			print(f'🧪 FINAL TEST: Minimal INFO_FLAG = 0x{info.flags:08X} (0x0051 only)')
 			
 			info.Domain = ''
 			info.UserName = ''
