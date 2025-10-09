@@ -507,15 +507,9 @@ class RDPConnection:
 			ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH if self.x224_protocol is not SUPP_PROTOCOLS.RDP else ENCRYPTION_FLAG.BIT_128
 			ud_sec.extEncryptionMethods = ENCRYPTION_FLAG.FRENCH
 
-			ud_clust = TS_UD_CS_CLUSTER()
-			ud_clust.RedirectedSessionID = 0
-			# Set proper ClusterInfo flags for RDS
-			# REDIRECTION_SUPPORTED (0x01) + ServerSessionRedirectionVersionMask (version 4 = 0x10)
-			# Version 4 is for RDP 7.0+ (Windows Server 2008 R2+)
-			ud_clust.Flags = (
-				ClusterInfo.REDIRECTION_SUPPORTED |  # 0x00000001 - Support redirection
-				(4 << 2)                              # 0x00000010 - Version 4 in bits 2-5 (ServerSessionRedirectionVersionMask)
-			)
+			# TESTING: Try without TS_UD_CS_CLUSTER
+			# Hypothesis: RDS server may reject connection if cluster info is present but incorrect
+			print('🧪 TESTING: Sending MCS Connect Initial WITHOUT TS_UD_CS_CLUSTER')
 
 			ud_net = TS_UD_CS_NET()
 			
@@ -529,7 +523,7 @@ class RDPConnection:
 			ts_ud.userdata = {
 				TS_UD_TYPE.CS_CORE : ud_core,
 				TS_UD_TYPE.CS_SECURITY : ud_sec,
-				TS_UD_TYPE.CS_CLUSTER : ud_clust,
+				# REMOVED: TS_UD_TYPE.CS_CLUSTER : ud_clust,
 				TS_UD_TYPE.CS_NET : ud_net
 			}
 
