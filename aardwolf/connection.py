@@ -683,8 +683,19 @@ class RDPConnection:
 	
 	async def __security_exchange(self):
 		try:
+			print('\n===== SECURITY EXCHANGE (RDP Classic) =====')
+			cert = self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].serverCertificate
+			print(f'📜 Server certificate bitlen: {cert.bitlen}')
+			print(f'📜 Server certificate exponent: {cert.exponent}')
+			
 			self.cryptolayer = RDPCryptoLayer(self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].serverRandom)
-			enc_secret = self.__server_connect_pdu[TS_UD_TYPE.SC_SECURITY].serverCertificate.encrypt(self.cryptolayer.ClientRandom)
+			enc_secret = cert.encrypt(self.cryptolayer.ClientRandom)
+			print(f'🔐 Encrypted secret size: {len(enc_secret)} bytes')
+			
+			if len(enc_secret) > 65000:
+				print(f'❌ ERROR: Encrypted secret too large ({len(enc_secret)} bytes) - exceeds TPKT limit!')
+				raise Exception(f'Security exchange packet too large: {len(enc_secret)} bytes')
+			
 			secexchange = TS_SECURITY_PACKET()
 			secexchange.encryptedClientRandom = enc_secret
 
@@ -693,6 +704,7 @@ class RDPConnection:
 			sec_hdr.flagsHi = 0
 
 			await self.handle_out_data(secexchange, sec_hdr, None, None, self.__joined_channels['MCS'].channel_id, False)
+			print('✅ Security exchange OK')
 			return True, None
 		except Exception as e:
 			return None, e
