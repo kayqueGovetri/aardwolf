@@ -477,20 +477,17 @@ class RDPConnection:
 				elif sc == 32:
 					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_32BPP_SUPPORT
 			
-			# SIMPLIFIED: Use minimal capability flags like MSTSC does
-			# Testing hypothesis: RDS rejects connection due to unsupported advanced flags
+			# CRITICAL FIX: Add VALID_CONNECTION_TYPE flag
+			# When connectionType is set to LAN, this flag MUST be present
+			# Otherwise server may reject the connection silently
 			ud_core.earlyCapabilityFlags = (
 				RNS_UD_CS.SUPPORT_ERRINFO_PDU |           # 0x0001 - REQUIRED for error reporting
 				RNS_UD_CS.WANT_32BPP_SESSION |            # 0x0002 - Request 32bpp
 				RNS_UD_CS.SUPPORT_STATUSINFO_PDU |        # 0x0004 - Status info
-				RNS_UD_CS.STRONG_ASYMMETRIC_KEYS          # 0x0008 - Strong keys
-				# REMOVED: NETCHAR_AUTODETECT (0x0080) - May cause RDS to reject
-				# REMOVED: DYNVC_GFX_PROTOCOL (0x0100) - Advanced graphics not needed
-				# REMOVED: MONITOR_LAYOUT (0x0040) - Not essential
-				# REMOVED: DYNAMIC_TIME_ZONE (0x0200) - Not essential
-				# REMOVED: HEARTBEAT (0x0400) - Not essential for initial connection
+				RNS_UD_CS.STRONG_ASYMMETRIC_KEYS |        # 0x0008 - Strong keys
+				RNS_UD_CS.VALID_CONNECTION_TYPE           # 0x0020 - CRITICAL: connectionType field is valid
 			)
-			print(f'🧪 TESTING: Simplified earlyCapabilityFlags = 0x{ud_core.earlyCapabilityFlags:04X}')
+			print(f'🧪 TESTING: earlyCapabilityFlags with VALID_CONNECTION_TYPE = 0x{ud_core.earlyCapabilityFlags:04X}')
 			ud_core.clientDigProductId = b'\x00' * 64
 			ud_core.connectionType = CONNECTION_TYPE.LAN  # Changed from UNK to LAN
 			ud_core.pad1octet = b'\x00'
@@ -742,19 +739,19 @@ class RDPConnection:
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
 			
-			# TESTING: Simplify INFO_FLAG to match MSTSC behavior
-			# Hypothesis: Complex flags may cause RDS to reject connection
+			# CRITICAL: Match MSTSC default flags exactly
+			# Based on MS-RDPBCGR specification and MSTSC behavior
 			info.flags = (
-				INFO_FLAG.MOUSE |           # 0x00000001 - Mouse input
-				INFO_FLAG.UNICODE |         # 0x00000010 - Unicode strings
-				INFO_FLAG.AUTOLOGON |       # 0x00000008 - Auto logon
-				INFO_FLAG.LOGONNOTIFY |     # 0x00000040 - Notify on logon (REQUIRED for RDS)
-				INFO_FLAG.COMPRESSION       # 0x00000080 - Compression
-				# REMOVED: ENABLEWINDOWSKEY - May not be needed
-				# REMOVED: MAXIMIZESHELL - May not be needed
-				# REMOVED: DISABLECTRLALTDEL - May not be needed
+				INFO_FLAG.MOUSE |            # 0x00000001 - Mouse input
+				INFO_FLAG.DISABLECTRLALTDEL | # 0x00000002 - Disable Ctrl+Alt+Del
+				INFO_FLAG.AUTOLOGON |        # 0x00000008 - Auto logon
+				INFO_FLAG.UNICODE |          # 0x00000010 - Unicode strings  
+				INFO_FLAG.MAXIMIZESHELL |    # 0x00000020 - Maximize shell (CRITICAL for RDS)
+				INFO_FLAG.LOGONNOTIFY |      # 0x00000040 - Notify on logon
+				INFO_FLAG.COMPRESSION |      # 0x00000080 - Compression
+				INFO_FLAG.ENABLEWINDOWSKEY   # 0x00000100 - Windows key
 			)
-			print(f'🧪 TESTING: Simplified INFO_FLAG = 0x{info.flags:08X}')
+			print(f'🧪 TESTING: INFO_FLAG = 0x{info.flags:08X} (with MAXIMIZESHELL)')
 			
 			info.Domain = ''
 			info.UserName = ''
