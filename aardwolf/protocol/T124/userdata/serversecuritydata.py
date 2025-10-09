@@ -40,9 +40,9 @@ class SERVER_CERTIFICATE:
 		try:
 			msg.certChainVersion = CERT_CHAIN_VERSION(version_value)
 		except ValueError:
-			# Unknown version - treat as VERSION_2 (X.509 certificate)
-			print(f'⚠️ Unknown CERT_CHAIN_VERSION: {version_value} (0x{version_value:08X}), treating as VERSION_2')
-			msg.certChainVersion = CERT_CHAIN_VERSION.VERSION_2
+			# Unknown version - default to VERSION_1 (Proprietary)
+			print(f'⚠️ Unknown CERT_CHAIN_VERSION: {version_value} (0x{version_value:08X}), treating as VERSION_1 (Proprietary)')
+			msg.certChainVersion = CERT_CHAIN_VERSION.VERSION_1
 		
 		if msg.certChainVersion in [CERT_CHAIN_VERSION.VERSION_1, CERT_CHAIN_VERSION.VERSION_0]:
 			msg.certificate = PROPRIETARYSERVERCERTIFICATE.from_buffer(buff)
@@ -50,10 +50,20 @@ class SERVER_CERTIFICATE:
 			msg.modulus = int.from_bytes(msg.certificate.PublicKeyBlob.modulus, byteorder='little', signed=False)
 			msg.bitlen = msg.certificate.PublicKeyBlob.bitlen
 		else:
-			msg.certificate = Certificate.load(buff.read())
-			msg.exponent = msg.certificate.public_key.native["public_key"]["public_exponent"]
-			msg.modulus = msg.certificate.public_key.native["public_key"]["modulus"]
-			msg.bitlen = msg.certificate.public_key.native["public_key"]["modulus"].bit_length()
+			# VERSION_2 = X.509 certificate
+			try:
+				msg.certificate = Certificate.load(buff.read())
+				msg.exponent = msg.certificate.public_key.native["public_key"]["public_exponent"]
+				msg.modulus = msg.certificate.public_key.native["public_key"]["modulus"]
+				msg.bitlen = msg.certificate.public_key.native["public_key"]["modulus"].bit_length()
+			except Exception as e:
+				# X.509 parsing failed - fall back to proprietary format
+				print(f'⚠️ X.509 certificate parsing failed: {e}')
+				print(f'⚠️ Attempting to parse as PROPRIETARYSERVERCERTIFICATE instead')
+				msg.certificate = PROPRIETARYSERVERCERTIFICATE.from_buffer(buff)
+				msg.exponent = msg.certificate.PublicKeyBlob.pubExp
+				msg.modulus = int.from_bytes(msg.certificate.PublicKeyBlob.modulus, byteorder='little', signed=False)
+				msg.bitlen = msg.certificate.PublicKeyBlob.bitlen
 
 		return msg
 	
