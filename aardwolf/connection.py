@@ -816,12 +816,17 @@ class RDPConnection:
 			# CRITICAL: Aguardar resposta do servidor ANTES de processar license
 			print('\n🔄 Aguardando resposta do servidor ao CLIENT_INFO_PDU...')
 			try:
-				data, err = await asyncio.wait_for(
+				pkt = await asyncio.wait_for(
 					self.__joined_channels['MCS'].out_queue.get(),
 					timeout=2.0
 				)
-				if err is not None:
-					raise err
+				# Support both raw bytes and (data, err) tuples
+				if isinstance(pkt, tuple) and len(pkt) == 2:
+					data, err = pkt
+					if err is not None:
+						raise err
+				else:
+					data, err = pkt, None
 				
 				print(f'📦 Resposta recebida: {len(data)} bytes')
 				print(f'📝 Hex (primeiros 40): {data[:40].hex()}')
@@ -831,7 +836,7 @@ class RDPConnection:
 					mcs_pdu = self._t125_per_codec.decode('DomainMCSPDU', data)
 					print(f'📋 MCS PDU tipo: {mcs_pdu[0]}')
 					
-					# Recolocar na fila para __handle_license processar
+					# Recolocar na fila para __handle_license processar (tuple form)
 					await self.__joined_channels['MCS'].out_queue.put((data, None))
 					print('✅ Resposta recolocada na fila para license handler')
 				except Exception as e:
@@ -959,13 +964,19 @@ class RDPConnection:
 				print(f'  🔧 Offset: {data_start_offset}')
 				print(f'  📝 Hex (20 bytes): {data[:20].hex()}')
 				
-				raw = data[data_start_offset:]
-				
-				try:
-					shc = TS_SHARECONTROLHEADER.from_bytes(raw)
-					print(f'  📋 pduType: {shc.pduType.name}')
-				except Exception as e:
-					print(f'  ❌ Erro parse header: {e}')
+				# Try parse ShareControlHeader with possible security header (4 bytes) present
+				shc = None
+				raw = None
+				for off in (data_start_offset, data_start_offset + 4):
+					try:
+						raw = data[off:]
+						shc = TS_SHARECONTROLHEADER.from_bytes(raw)
+						print(f'  📋 pduType (offset {off}): {shc.pduType.name}')
+						break
+					except Exception as e:
+						print(f'  ❌ Header parse failed at offset {off}: {e}')
+						shc = None
+				if shc is None:
 					continue
 
 				if shc.pduType == PDUTYPE.DEMANDACTIVEPDU:
@@ -1079,9 +1090,19 @@ class RDPConnection:
 			data, err = await self.__joined_channels['MCS'].out_queue.get()
 			if err is not None:
 				raise err
-			
-			data = data[data_start_offset:]
-			shc = TS_SHARECONTROLHEADER.from_bytes(data)
+			# Parse with optional 4-byte security header
+			shc = None
+			raw = None
+			for off in (data_start_offset, data_start_offset + 4):
+				try:
+					candidate = data[off:]
+					shc = TS_SHARECONTROLHEADER.from_bytes(candidate)
+					raw = candidate
+					break
+				except Exception:
+					shc = None
+			if shc is None:
+				raise Exception('Unexpected reply! Could not parse ShareControlHeader')
 			if shc.pduType == PDUTYPE.DATAPDU:
 				shd = TS_SHAREDATAHEADER.from_bytes(data)
 				if shd.pduType2 == PDUTYPE2.SET_ERROR_INFO_PDU:
@@ -1309,16 +1330,33 @@ class RDPConnection:
 					# Handle mergeChannelsRequest - server is requesting channel merge
 					if x[0] == 'mergeChannelsRequest':
 						print('🔀 CRITICAL: Server sent mergeChannelsRequest!')
-						print('📤 Sending mergeChannelsConfirm response...')
-						# Send mergeChannelsConfirm response
-						merge_confirm = self._t125_per_codec.encode('DomainMCSPDU', ('mergeChannelsConfirm', {}))
-						await self._x224net.write(merge_confirm)
-						print('✅ mergeChannelsConfirm sent - server should now send DEMANDACTIVEPDU')
+						print('📤 Sending mergeChannelsConfirm (echo payload) ...')
+						# Echo back mergeChannels and purgeChannelIds per spec
+						try:
+							merge_payload = x[1]
+							merge_confirm = self._t125_per_codec.encode('DomainMCSPDU', ('mergeChannelsConfirm', merge_payload))
+							await self._x224net.write(merge_confirm)
+							print('✅ mergeChannelsConfirm sent')
+						except Exception as me:
+							print(f'❌ Failed to send mergeChannelsConfirm: {me}')
+						continue
+
+					# Some servers also issue token merge before DemandActive
+					if x[0] == 'mergeTokensRequest':
+						print('🔑 Server sent mergeTokensRequest - replying with mergeTokensConfirm')
+						try:
+							tokens_payload = x[1]
+							tokens_confirm = self._t125_per_codec.encode('DomainMCSPDU', ('mergeTokensConfirm', tokens_payload))
+							await self._x224net.write(tokens_confirm)
+							print('✅ mergeTokensConfirm sent')
+						except Exception as te:
+							print(f'❌ Failed to send mergeTokensConfirm: {te}')
 						continue
 					
 					if x[0] != 'sendDataIndication':
-						# Log all non-userdata MCS control PDUs (e.g., tokenInhibitConfirm) for licensing diagnostics
-						print(f'⚠️ Non-sendDataIndication PDU: {x[0]} - DISCARDING (continue)')
+						# Forward Domain control PDUs (e.g., tokenInhibitConfirm) to MCS out_queue for handlers
+						print(f'ℹ️ Forwarding DomainMCSPDU {x[0]} to MCS out_queue')
+						await self.__joined_channels['MCS'].out_queue.put((response.data, None))
 						continue
 					
 					data = x[1]['userData']
