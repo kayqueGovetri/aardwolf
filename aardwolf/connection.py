@@ -241,10 +241,19 @@ class RDPConnection:
 						# user provided some secret but it's not a password
 						# here we request restricted admin mode
 						self.client_x224_flags = NEG_FLAGS.RESTRICTED_ADMIN_MODE_REQUIRED
-						self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL |SUPP_PROTOCOLS.HYBRID
+						# Prefer NLA-only if requested: avoid advertising SSL to prevent downgrade
+						self.client_x224_supported_protocols = (
+							(SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.HYBRID)
+							if self.iosettings.prefer_nla_only else
+							(SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID)
+						)
 					else:
 						self.client_x224_flags = 0
-						self.client_x224_supported_protocols = SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID_EX | SUPP_PROTOCOLS.HYBRID
+						self.client_x224_supported_protocols = (
+							(SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.HYBRID_EX | SUPP_PROTOCOLS.HYBRID)
+							if self.iosettings.prefer_nla_only else
+							(SUPP_PROTOCOLS.RDP | SUPP_PROTOCOLS.SSL | SUPP_PROTOCOLS.HYBRID_EX | SUPP_PROTOCOLS.HYBRID)
+						)
 				
 				elif self.credentials.stype == asyauthSecret.NONE: #and self.credentials.username is None:
 					# not sending any passwords, hoping HYBRID is not required
@@ -256,7 +265,16 @@ class RDPConnection:
 			
 			logger.debug('Client protocol flags: %s' % self.client_x224_flags)
 			logger.debug('Client protocol offer: %s' % self.client_x224_supported_protocols)
-			connection_accepted_reply, err = await self._x224net.client_negotiate(self.client_x224_flags, self.client_x224_supported_protocols)
+			# Build X.224 cookie: prefer load-balance info (msts), else mstshash=username
+			cookie_bytes = None
+			try:
+				if getattr(self.iosettings, 'loadbalance_info', None):
+					cookie_bytes = ('Cookie: msts=' + str(self.iosettings.loadbalance_info) + '\r\n').encode()
+				elif getattr(self.credentials, 'username', None):
+					cookie_bytes = ('Cookie: mstshash=' + str(self.credentials.username) + '\r\n').encode()
+			except Exception:
+				cookie_bytes = None
+			connection_accepted_reply, err = await self._x224net.client_negotiate(self.client_x224_flags, self.client_x224_supported_protocols, cookie=cookie_bytes)
 			if err is not None:
 				raise err
 			
@@ -477,12 +495,17 @@ class RDPConnection:
 				elif sc == 32:
 					ud_core.supportedColorDepths |= SUPPORTED_COLOR_DEPTH.RNS_UD_32BPP_SUPPORT
 			
-			# FINAL FIX: Minimal earlyCapabilityFlags that RDS accepts
-			# Based on successful RDS connections, use ONLY essential flags
+			# FINAL TEST: Try with MORE capabilities (opposite approach)
+			# Maybe server rejects if capabilities are TOO minimal
 			ud_core.earlyCapabilityFlags = (
-				RNS_UD_CS.SUPPORT_ERRINFO_PDU             # 0x0001 - REQUIRED for error reporting
+				RNS_UD_CS.SUPPORT_ERRINFO_PDU |           # 0x0001
+				RNS_UD_CS.WANT_32BPP_SESSION |            # 0x0002
+				RNS_UD_CS.SUPPORT_STATUSINFO_PDU |        # 0x0004
+				RNS_UD_CS.STRONG_ASYMMETRIC_KEYS |        # 0x0008
+				RNS_UD_CS.VALID_CONNECTION_TYPE |         # 0x0020
+				RNS_UD_CS.SUPPORT_MONITOR_LAYOUT_PDU      # 0x0040
 			)
-			print(f'🧪 FINAL TEST: Minimal earlyCapabilityFlags = 0x{ud_core.earlyCapabilityFlags:04X} (0x0001 only)')
+			print(f'🧪 TESTING: More complete earlyCapabilityFlags = 0x{ud_core.earlyCapabilityFlags:04X}')
 			ud_core.clientDigProductId = b'\x00' * 64
 			ud_core.connectionType = CONNECTION_TYPE.LAN  # Changed from UNK to LAN
 			ud_core.pad1octet = b'\x00'
@@ -502,12 +525,14 @@ class RDPConnection:
 			ud_sec.encryptionMethods = ENCRYPTION_FLAG.FRENCH if self.x224_protocol is not SUPP_PROTOCOLS.RDP else ENCRYPTION_FLAG.BIT_128
 			ud_sec.extEncryptionMethods = ENCRYPTION_FLAG.FRENCH
 
-			# FINAL FIX: Add TS_UD_CS_CLUSTER with minimal configuration
-			# RDS may require this structure even if not using clustering
+			# Advertise redirection support and version in ClientClusterData (per IronRDP)
 			ud_clust = TS_UD_CS_CLUSTER()
 			ud_clust.RedirectedSessionID = 0
-			ud_clust.Flags = 0  # No flags - simplest possible configuration
-			print('🧪 FINAL TEST: Including TS_UD_CS_CLUSTER with Flags=0')
+			# Encode REDIRECTION_SUPPORTED and version (e.g., V4 -> 4 << 2)
+			redir_version = 4
+			flags_val = int(ClusterInfo.REDIRECTION_SUPPORTED) | (redir_version << 2)
+			ud_clust.Flags = ClusterInfo(flags_val)
+			print(f'🧪 GCC Cluster: Flags=0x{int(ud_clust.Flags):08X} (version={redir_version})')
 
 			ud_net = TS_UD_CS_NET()
 			
@@ -743,14 +768,19 @@ class RDPConnection:
 			info = TS_INFO_PACKET()
 			info.CodePage = 0
 			
-			# FINAL FIX: Absolute minimum INFO_FLAG for RDS
-			# Testing with only essential flags
+			# TESTING: More complete INFO_FLAG (like MSTSC)
 			info.flags = (
-				INFO_FLAG.MOUSE |            # 0x00000001 - Mouse input
-				INFO_FLAG.UNICODE |          # 0x00000010 - Unicode strings
-				INFO_FLAG.LOGONNOTIFY        # 0x00000040 - Notify on logon (REQUIRED for RDS)
+				INFO_FLAG.MOUSE |                # 0x00000001
+				INFO_FLAG.DISABLECTRLALTDEL |    # 0x00000002
+				INFO_FLAG.AUTOLOGON |            # 0x00000008
+				INFO_FLAG.UNICODE |              # 0x00000010
+				INFO_FLAG.MAXIMIZESHELL |        # 0x00000020
+				INFO_FLAG.LOGONNOTIFY |          # 0x00000040
+				INFO_FLAG.COMPRESSION |          # 0x00000080
+				INFO_FLAG.ENABLEWINDOWSKEY |     # 0x00000100
+				INFO_FLAG.REMOTECONSOLEAUDIO     # 0x00002000
 			)
-			print(f'🧪 FINAL TEST: Minimal INFO_FLAG = 0x{info.flags:08X} (0x0051 only)')
+			print(f'🧪 TESTING: More complete INFO_FLAG = 0x{info.flags:08X}')
 			
 			info.Domain = ''
 			info.UserName = ''
@@ -1135,6 +1165,58 @@ class RDPConnection:
 
 			await self.handle_out_data(cli_font, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
 			
+			# RDS: REFRESH_RECT (full screen)
+			class _RawPDU:
+				def __init__(self, data: bytes):
+					self._data = data
+				def to_bytes(self) -> bytes:
+					return self._data
+
+			# Build full-screen rectangle (left, top, right, bottom) as uint16
+			left = 0
+			top = 0
+			right = self.iosettings.video_width
+			bottom = self.iosettings.video_height
+			# numberOfAreas (2 bytes), pad2Octets (2 bytes), then RECT16 (8 bytes)
+			refresh_body = (
+				(1).to_bytes(2, 'little') +
+				(0).to_bytes(2, 'little') +
+				left.to_bytes(2, 'little') +
+				top.to_bytes(2, 'little') +
+				right.to_bytes(2, 'little') +
+				bottom.to_bytes(2, 'little')
+			)
+			refresh_pdu = _RawPDU(refresh_body)
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.pduType2 = PDUTYPE2.REFRESH_RECT
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+			await self.handle_out_data(refresh_pdu, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+
+			# RDS: SUPPRESS_OUTPUT (allow display updates = 1)
+			suppress_body = (1).to_bytes(2, 'little') + (0).to_bytes(2, 'little')
+			suppress_pdu = _RawPDU(suppress_body)
+			data_hdr = TS_SHAREDATAHEADER()
+			data_hdr.shareID = 0x103EA
+			data_hdr.streamID = STREAM_TYPE.LOW
+			data_hdr.pduType2 = PDUTYPE2.SUPPRESS_OUTPUT
+			sec_hdr = None
+			if self.cryptolayer is not None:
+				sec_hdr = TS_SECURITY_HEADER()
+				sec_hdr.flags = SEC_HDR_FLAG.ENCRYPT
+				sec_hdr.flagsHi = 0
+			await self.handle_out_data(suppress_pdu, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+
+			# Extra refresh requests (helpful for session attachment)
+			for _ in range(3):
+				await asyncio.sleep(0.5)
+				await self.handle_out_data(refresh_pdu, sec_hdr, data_hdr, None, self.__joined_channels['MCS'].channel_id, False)
+
 			return True, None
 		except Exception as e:
 			return None, e
@@ -1357,7 +1439,7 @@ class RDPConnection:
 		try:
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.pduType2 = PDUTYPE2.INPUT
 			
 			kbi = TS_KEYBOARD_EVENT()
@@ -1388,7 +1470,7 @@ class RDPConnection:
 		try:
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.pduType2 = PDUTYPE2.INPUT
 			
 			kbi = TS_UNICODE_KEYBOARD_EVENT()
@@ -1419,7 +1501,7 @@ class RDPConnection:
 				return True, None
 			data_hdr = TS_SHAREDATAHEADER()
 			data_hdr.shareID = 0x103EA
-			data_hdr.streamID = STREAM_TYPE.MED
+			data_hdr.streamID = STREAM_TYPE.LOW
 			data_hdr.pduType2 = PDUTYPE2.INPUT
 			
 			mouse = TS_POINTER_EVENT()
@@ -1517,12 +1599,16 @@ class RDPConnection:
 					#signaling exit
 					await self.terminate()
 					return
+				# Prevent input before first bitmap unless explicitly allowed (RemoteApp-friendly)
+				if not self.desktop_buffer_has_data and not self.iosettings.allow_input_without_video:
+					logger.debug('Input gated until first bitmap update (set iosettings.allow_input_without_video=True to override)')
+					continue
 				if indata.type == RDPDATATYPE.KEYSCAN:
 					indata = cast(RDP_KEYBOARD_SCANCODE, indata)
 					#right side control, altgr, and pause buttons still dont work well...
 					#if indata.keyCode in [97]:
-					#	await self.send_key_virtualkey('VK_RCONTROL', indata.is_pressed, indata.is_extended, scancode_hint=indata.keyCode)
-					if indata.vk_code is not None:
+					# await self.send_key_virtualkey('VK_RCONTROL', indata.is_pressed, indata.is_extended, scancode_hint=indata.keyCode)
+					if hasattr(indata, 'vk_code') and indata.vk_code is not None:
 						await self.send_key_virtualkey(indata.vk_code, indata.is_pressed, indata.is_extended, scancode_hint=indata.keyCode)
 					else:
 						await self.send_key_scancode(indata.keyCode, indata.is_pressed, indata.is_extended)

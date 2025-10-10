@@ -12,12 +12,11 @@ from aardwolf.protocol.x224.constants import NEG_FLAGS, SUPP_PROTOCOLS
 from aardwolf.protocol.x224.client.connectionrequest import ConnectionRequest, RDP_NEG_REQ
 from aardwolf.protocol.x224.server.connectionconfirm import ConnectionConfirm
 
-
 class X224Network:
 	def __init__(self, connection:UniConnection):
 		self.connection = connection
 	
-	async def client_negotiate(self, flags:NEG_FLAGS = 0, supported_protocols:SUPP_PROTOCOLS = SUPP_PROTOCOLS.SSL|SUPP_PROTOCOLS.HYBRID_EX, to_raise = True):
+	async def client_negotiate(self, flags:NEG_FLAGS = 0, supported_protocols:SUPP_PROTOCOLS = SUPP_PROTOCOLS.SSL|SUPP_PROTOCOLS.HYBRID_EX, to_raise = True, cookie: bytes = None):
 		reply = None
 		try:
 			negreq = RDP_NEG_REQ()
@@ -26,14 +25,14 @@ class X224Network:
 			
 			conreq = ConnectionRequest()
 			conreq.SRC_REF = 0
-			conreq.cookie = b'Cookie: mstshash=devel\r\n'
+			# Prefer caller-provided cookie, else fallback to mstshash
+			conreq.cookie = cookie if cookie is not None else b'Cookie: mstshash=aardwolf\r\n'
 			conreq.rdpNegReq = negreq
 
 			await self.connection.write(conreq.to_bytes())
 			reply = await self.read()
 			if reply.CR != TPDU_TYPE.CONNECTION_CONFIRM:
 				raise Exception('Server sent back unknown TPDU type! %s' % reply.CR)
-			reply = typing.cast(ConnectionConfirm, reply)
 			if reply.rdpNegData is None:
 				return reply, None
 			
@@ -59,5 +58,3 @@ class X224Network:
 		msg.data = data
 		await self.connection.write(msg.to_bytes())
 
-			
-			
